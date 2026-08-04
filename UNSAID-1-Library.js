@@ -51,8 +51,10 @@ const UNSAID_DEFAULTS = {
   chance: 0.3,        // chance per turn a thought fires, when someone qualifies
   cooldown: 3,          // turns a character must wait before thinking again
   mentionThreshold: 3,   // a name needs MORE than this many mentions before Codex cards it
-  memoryMaxEntries: 8,    // how many characters' core truths ride in always-on memory
-  playerName: ""           // if set, Codex will never write a card for this name
+  codexCooldown: 5,       // minimum turns between two Codex triggers, of any name
+  codexMaxAttempts: 3,     // retries on a name before Codex gives up on it
+  memoryMaxEntries: 8,      // how many characters' core truths ride in always-on memory
+  playerName: ""             // if set, Codex will never write a card for this name
 };
 
 const CONTEXT_SAFETY_MARGIN = 20; // leave a little headroom below the platform's stated limit
@@ -74,7 +76,9 @@ const CODEX_STOPWORDS = new Set([
   "Before", "After", "Once", "Just", "Even", "Also", "Instead",
   "Indeed", "Certainly", "Clearly", "Obviously", "Surely",
   "Sometimes", "Always", "Never", "Really", "Actually", "Honestly",
-  "Wait", "Look", "Listen", "Right", "Alright", "Hey", "Huh", "Hmm", "Ah"
+  "Wait", "Look", "Listen", "Right", "Alright", "Hey", "Huh", "Hmm", "Ah",
+  "Your", "My", "His", "Her", "Its", "Our", "Their", "These", "Those",
+  "Some", "Any", "All", "Each", "Every", "Nothing", "Something", "Anything"
 ]);
 
 const CODEX_LOCATION_HINTS = /\b(city|state|street|avenue|canyon|terminal|park|building|tower|island|country|nation|kingdom|realm|district|region|planet|world|base|facility|academy|university|bridge|river|mountain|forest|desert|battleground|warzone|hall|tavern|inn|castle|fortress|temple)\b/i;
@@ -117,6 +121,16 @@ function initUnsaid() {
   ensureConfigCard();
 }
 
+// On "cache efficient" models, AI Dungeon reads the Context hook but does
+// NOT use what it returns — the model never actually sees anything this
+// script injects, even though the hook still runs. Left unchecked, that
+// means Codex and private thoughts silently fail every single turn: no
+// instruction ever reaches the model, yet the AI — seeing 【CARD】 blocks
+// or 《...》 thought lines already sitting in its own story history from
+// earlier turns — starts imitating that formatting unprompted, with
+// nothing steering what it writes. That's what produces near-identical
+// repeated "thoughts" and cards eating whole turns: the AI is copying a
+// pattern it can see, not responding to a request it never received.
 function escapeForRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -152,6 +166,9 @@ function ensureConfigCard() {
       "> Chance of a thought per turn (0 to 1): 0.3\n" +
       "> Turns before the same character can think again: 3\n" +
       "> Mentions needed before Codex creates a card: 3\n" +
+      "> Minimum turns between Codex cards: 5\n" +
+      "> Codex retries before giving up on a name: 3\n" +
+      "> Reset Codex tracking now: false\n" +
       "> Characters remembered in long-term memory: 8\n" +
       "> Player character (skip when Codexing): ";
     card.description =
@@ -162,6 +179,9 @@ function ensureConfigCard() {
       "- Chance of a thought per turn: how likely (0 to 1) it is that an eligible, active character reveals a private thought on any given turn. Higher means more frequent reveals.\n" +
       "- Turns before the same character can think again: a cooldown, in turns, before that same character is eligible for another thought — keeps one character from dominating.\n" +
       "- Mentions needed before Codex creates a card: how many times a new name must appear before Codex writes a card for it, so background one-off names don't get cards of their own.\n" +
+      "- Minimum turns between Codex cards: how many turns must pass between one Codex card and the next, regardless of how many names qualify — keeps Codex from taking over several turns in a row.\n" +
+      "- Codex retries before giving up on a name: how many times Codex will try to get a properly formatted card out of the AI before giving up on that name for good. Raise this if cards are failing to complete.\n" +
+      "- Reset Codex tracking now: set to true and Codex will forget every failed attempt and cooldown timer, then flip this back to false on its own. Use this if cards seem stuck and not being made.\n" +
       "- Characters remembered in long-term memory: how many characters' core truths are allowed to ride in the always-on memory summary at once. Higher keeps more people relevant longer, but uses more of your context budget.\n" +
       "- Player character (skip when Codexing): put your own character's name here if you don't want Codex writing an AI-authored profile for them. Leave blank to let Codex treat them like anyone else. In Multiplayer, everyone's character name is already skipped automatically.\n\n" +
       "Add the names of characters who can have private thoughts below, one per line. Codex adds newly discovered characters here automatically.\n" +
@@ -206,6 +226,28 @@ function readUnsaidConfig() {
     if (!isNaN(parsedMentions)) cfg.mentionThreshold = Math.max(0, parsedMentions);
   }
 
+  const codexCooldownMatch = card.entry.match(/Minimum turns between Codex cards:\s*(\d+)/i);
+  if (codexCooldownMatch) {
+    const parsedCodexCooldown = parseInt(codexCooldownMatch[1], 10);
+    if (!isNaN(parsedCodexCooldown)) cfg.codexCooldown = Math.max(0, parsedCodexCooldown);
+  }
+
+  const codexAttemptsMatch = card.entry.match(/Codex retries before giving up on a name:\s*(\d+)/i);
+  if (codexAttemptsMatch) {
+    const parsedAttempts = parseInt(codexAttemptsMatch[1], 10);
+    if (!isNaN(parsedAttempts)) cfg.codexMaxAttempts = Math.max(1, parsedAttempts);
+  }
+
+  // a manual escape hatch: flipping this to true clears every failed
+  // attempt, cooldown timer, and pending mention count, so a Codex that
+  // seems stuck gets a clean slate. Flips itself back to false once used.
+  const resetMatch = card.entry.match(/Reset Codex tracking now:\s*(true|false)/i);
+  if (resetMatch && resetMatch[1].toLowerCase() === "true") {
+    state.unsaid.codex.attempts = {};
+    state.unsaid.codex.mentionCounts = {};
+    state.unsaid.codex.lastTriggerTurn = 0;
+  }
+
   const memCountMatch = card.entry.match(/remembered in long-term memory:\s*(\d+)/i);
   if (memCountMatch) {
     const parsedMemCount = parseInt(memCountMatch[1], 10);
@@ -236,6 +278,9 @@ function readUnsaidConfig() {
     `> Chance of a thought per turn (0 to 1): ${cfg.chance}\n` +
     `> Turns before the same character can think again: ${cfg.cooldown}\n` +
     `> Mentions needed before Codex creates a card: ${cfg.mentionThreshold}\n` +
+    `> Minimum turns between Codex cards: ${cfg.codexCooldown}\n` +
+    `> Codex retries before giving up on a name: ${cfg.codexMaxAttempts}\n` +
+    `> Reset Codex tracking now: false\n` +
     `> Characters remembered in long-term memory: ${cfg.memoryMaxEntries}\n` +
     `> Player character (skip when Codexing): ${cfg.playerName}`;
 
@@ -345,14 +390,15 @@ function excludedNames(cfg) {
 // picks a name that has cleared the mention threshold, doesn't already
 // have a Story Card (or a close match to one), and hasn't exhausted its
 // retries. Deleting an existing card makes its name eligible again.
-function findCodexCandidate(threshold, excludeNames) {
+function findCodexCandidate(threshold, excludeNames, maxAttempts) {
   const exclude = (excludeNames || []).map(n => n.toLowerCase());
+  const cap = typeof maxAttempts === "number" ? maxAttempts : CODEX_MAX_ATTEMPTS;
   const counts = state.unsaid.codex.mentionCounts;
   for (const name in counts) {
     if (counts[name] <= threshold) continue;
     if (exclude.includes(name.toLowerCase())) continue;
     if (storyCards.some(c => isSameCardEntity(c.title, name))) continue;
-    if ((state.unsaid.codex.attempts[name] || 0) >= CODEX_MAX_ATTEMPTS) continue;
+    if ((state.unsaid.codex.attempts[name] || 0) >= cap) continue;
     return name;
   }
   return null;
@@ -362,7 +408,7 @@ function findCodexCandidate(threshold, excludeNames) {
 function buildCodexInstruction(name, type) {
   const fields = CARD_TEMPLATES[type] || CHARACTER_CARD_FIELDS;
   const body = fields.map(f => `${f}: ${f === "Name" ? name : "..."}`).join("\n");
-  return `\n[Write a hidden profile for "${name}" wrapped between 【CARD】 and 【/CARD】, placed after the story text — not part of the visible narrative:\n【CARD】\n${body}\n【/CARD】\nOne short line per field.]\n`;
+  return `\n[Finish the story normally first — that's the priority. Then, on new lines after it, add a brief hidden profile for "${name}" wrapped between 【CARD】 and 【/CARD】, not part of the visible narrative:\n【CARD】\n${body}\n【/CARD】\nKeep each field to a few words — this should take one or two lines total, not paragraphs.]\n`;
 }
 
 function codexLogTitle(type) {
@@ -518,6 +564,8 @@ function buildAndFitThoughtInstruction(chosen, active, baseText) {
     : "";
   const wantNote = mind && mind.want ? ` Last known want: "${mind.want}" (can change if the scene moves them).` : "";
 
+  const varietyNote = " Word this differently than any earlier thought — don't reuse the same sentence structure or phrasing just because the situation rhymes.";
+
   let instruction;
   if (target) {
     const relHistory = mind && mind.relationHistory && mind.relationHistory[target];
@@ -527,9 +575,9 @@ function buildAndFitThoughtInstruction(chosen, active, baseText) {
       : (mind && mind.relations && mind.relations[target]
         ? ` Feels ${mind.relations[target]} toward ${target} unless this scene shifts it.`
         : "");
-    instruction = `\n[${chosen}'s unspoken reaction to ${target} — 2 italicized sentences: how they really feel about ${target} right now, and what they secretly want from this moment. ${target} can't perceive it.${coreNote}${relationNote}${historyNote}${wantNote} Format: "《${chosen}, feeling, about ${target}: thought.》"]\n`;
+    instruction = `\n[${chosen}'s unspoken reaction to ${target} — 2 italicized sentences: how they really feel about ${target} right now, and what they secretly want from this moment. ${target} can't perceive it.${coreNote}${relationNote}${historyNote}${wantNote}${varietyNote} Format: "《${chosen}, feeling, about ${target}: thought.》"]\n`;
   } else if (mind && mind.core) {
-    instruction = `\n[${chosen}'s private thought — 2 italicized sentences: how they really feel right now, and what they secretly want. Consistent with "${mind.core}" and their feeling of ${mind.feeling} unless this scene shifts it.${historyNote}${wantNote} Format: "《${chosen}, feeling: thought.》" No one else perceives it.]\n`;
+    instruction = `\n[${chosen}'s private thought — 2 italicized sentences: how they really feel right now, and what they secretly want. Consistent with "${mind.core}" and their feeling of ${mind.feeling} unless this scene shifts it.${historyNote}${wantNote}${varietyNote} Format: "《${chosen}, feeling: thought.》" No one else perceives it.]\n`;
   } else {
     instruction = `\n[${chosen}'s private thought — 2 italicized sentences: how they really feel right now, and what they secretly want. Format: "《${chosen}, feeling: thought.》" No one else perceives it.]\n`;
   }

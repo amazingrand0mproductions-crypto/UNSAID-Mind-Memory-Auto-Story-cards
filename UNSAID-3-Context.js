@@ -1,4 +1,12 @@
+// @cache-compatible
 // ===== UNSAID — CONTEXT =====
+// Without this directive, AI Dungeon's cache-efficient models (and any
+// model running with Optimized Context on) read this hook for
+// information but silently ignore whatever it returns — meaning every
+// instruction below would be built, "sent," and then never actually
+// reach the AI. That mismatch is consistent with the AI seeming stuck
+// or repeating itself: the model would be working from context that
+// never reflected what this script was trying to add.
 initUnsaid();
 
 const modifier = (text) => {
@@ -31,9 +39,11 @@ const modifier = (text) => {
       }
     }
 
-    // --- Codex: describe something once it's been mentioned enough times ---
-    if (cfg.codexEnabled) {
-      const candidate = findCodexCandidate(cfg.mentionThreshold, excludedNames(cfg));
+    // --- Codex: describe something once it's been mentioned enough times,
+    // no more than once every codexCooldown turns ---
+    const sinceLastCodex = state.unsaid.turn - (state.unsaid.codex.lastTriggerTurn || 0);
+    if (cfg.codexEnabled && sinceLastCodex >= cfg.codexCooldown) {
+      const candidate = findCodexCandidate(cfg.mentionThreshold, excludedNames(cfg), cfg.codexMaxAttempts);
       if (candidate) {
         const type = classifyCodexEntry(candidate, text);
         const instruction = buildCodexInstruction(candidate, type);
@@ -43,6 +53,7 @@ const modifier = (text) => {
           state.unsaid.codex.attempts[candidate] = (state.unsaid.codex.attempts[candidate] || 0) + 1;
           state.unsaid.codex.pendingName = candidate;
           state.unsaid.codex.pendingType = type;
+          state.unsaid.codex.lastTriggerTurn = state.unsaid.turn;
           state.unsaid.pending = null; // don't stack a thought reveal the same turn
           return { text: text + fitted };
         }
@@ -70,9 +81,7 @@ const modifier = (text) => {
     state.unsaid.pending = null;
     return { text };
   } catch (e) {
-    // never let an unexpected error here break the player's turn —
-    // some platform configurations (e.g. certain models with Optimized
-    // Context on) restrict scripting features in undocumented ways
+    // never let an unexpected error here break the player's turn
     if (typeof log === "function") log("UNSAID Context error: " + (e && e.message));
     return { text: originalText };
   }
