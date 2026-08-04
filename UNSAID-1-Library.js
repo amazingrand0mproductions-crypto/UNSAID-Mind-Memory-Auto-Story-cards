@@ -408,7 +408,16 @@ function findCodexCandidate(threshold, excludeNames, maxAttempts) {
 function buildCodexInstruction(name, type) {
   const fields = CARD_TEMPLATES[type] || CHARACTER_CARD_FIELDS;
   const body = fields.map(f => `${f}: ${f === "Name" ? name : "..."}`).join("\n");
-  return `\n[Finish the story normally first — that's the priority. Then, on new lines after it, add a brief hidden profile for "${name}" wrapped between 【CARD】 and 【/CARD】, not part of the visible narrative:\n【CARD】\n${body}\n【/CARD】\nKeep each field to a few words — this should take one or two lines total, not paragraphs.]\n`;
+
+  // if private thoughts have already established something true about
+  // this character, hand it to Codex so the Personality/Background it
+  // writes doesn't contradict what's already been privately shown
+  const mind = type === "character" ? state.unsaid.minds[name] : null;
+  const knownNote = mind && mind.core
+    ? ` They've privately shown this about themselves: "${mind.core}" — let Personality and Background agree with it, not invent something that contradicts it.`
+    : "";
+
+  return `\n[Finish the story normally first — that's the priority. Then, on new lines after it, add a brief hidden profile for "${name}" wrapped between 【CARD】 and 【/CARD】, not part of the visible narrative:${knownNote}\n【CARD】\n${body}\n【/CARD】\nKeep each field to a few words — this should take one or two lines total, not paragraphs.]\n`;
 }
 
 function codexLogTitle(type) {
@@ -529,6 +538,7 @@ function createMind() {
     feeling: null,
     feelingHistory: [],
     want: null,
+    lastThoughtText: null,
     relations: {},
     relationOrder: [],
     relationHistory: {},
@@ -548,6 +558,23 @@ function pushCapped(arr, value, limit) {
 // builds a private-thought instruction for the given character (used by
 // both the normal chance-based reveal and a forced /peek), then fits it
 // to the context budget. Returns null if there's no room to send it.
+// picks among eligible characters, weighting toward whoever's gone
+// longest without a reveal (or never had one), so one character
+// doesn't crowd out a quieter one just by rolling well more often
+function pickBySilence(names, currentTurn) {
+  const weights = names.map(name => {
+    const mind = state.unsaid.minds[name];
+    return mind ? Math.max(1, currentTurn - mind.lastTurn) : 999;
+  });
+  const total = weights.reduce((a, b) => a + b, 0);
+  let roll = Math.random() * total;
+  for (let i = 0; i < names.length; i++) {
+    roll -= weights[i];
+    if (roll <= 0) return names[i];
+  }
+  return names[names.length - 1];
+}
+
 function buildAndFitThoughtInstruction(chosen, active, baseText) {
   const mind = state.unsaid.minds[chosen];
 
@@ -564,7 +591,9 @@ function buildAndFitThoughtInstruction(chosen, active, baseText) {
     : "";
   const wantNote = mind && mind.want ? ` Last known want: "${mind.want}" (can change if the scene moves them).` : "";
 
-  const varietyNote = " Word this differently than any earlier thought — don't reuse the same sentence structure or phrasing just because the situation rhymes.";
+  const varietyNote = mind && mind.lastThoughtText
+    ? ` Word this differently than last time — don't reuse: "${mind.lastThoughtText}"`
+    : "";
 
   let instruction;
   if (target) {
@@ -598,7 +627,13 @@ function syncCoreMemory(maxEntries) {
   const cap = typeof maxEntries === "number" ? maxEntries : CORE_MEMORY_MAX_ENTRIES;
 
   const names = Object.keys(state.unsaid.minds)
-    .filter(name => state.unsaid.minds[name].core)
+    .filter(name => {
+      const m = state.unsaid.minds[name];
+      // a character who's only ever had reactions to someone else (no
+      // standalone thought yet) still has real relationship data worth
+      // persisting, so they're not excluded just for lacking a core truth
+      return m.core || (m.relationOrder && m.relationOrder.length > 0);
+    })
     .sort((a, b) => (state.unsaid.minds[b].lastTurn || 0) - (state.unsaid.minds[a].lastTurn || 0))
     .slice(0, cap);
 
@@ -609,7 +644,8 @@ function syncCoreMemory(maxEntries) {
       : null;
     const relationNote = lastRelation ? ` (feels ${mind.relations[lastRelation]} toward ${lastRelation})` : "";
     const wantNote = mind.want ? `, currently wants: ${mind.want}` : "";
-    return `${name}: ${mind.core}${relationNote}${wantNote}`;
+    const base = mind.core || "no standalone thought yet";
+    return `${name}: ${base}${relationNote}${wantNote}`;
   });
 
   const existing = (state.memory.context || "").split(CORE_MEMORY_MARKER)[0].replace(/\s+$/, "");

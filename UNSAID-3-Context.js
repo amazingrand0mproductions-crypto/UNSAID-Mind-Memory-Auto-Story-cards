@@ -69,7 +69,7 @@ const modifier = (text) => {
       });
 
       if (eligible.length > 0 && Math.random() < cfg.chance) {
-        const chosen = eligible[Math.floor(Math.random() * eligible.length)];
+        const chosen = pickBySilence(eligible, state.unsaid.turn);
         const fitted = buildAndFitThoughtInstruction(chosen, active, text);
         if (fitted) {
           state.unsaid.pending = chosen;

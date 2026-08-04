@@ -110,6 +110,7 @@ const modifier = (text) => {
         if (!mind.core && !about) mind.core = thought;
         mind.feeling = feeling;
         if (wantSentence) mind.want = wantSentence;
+        mind.lastThoughtText = thought;
         mind.lastTurn = state.unsaid.turn;
         if (!mind.feelingHistory) mind.feelingHistory = [];
         pushCapped(mind.feelingHistory, feeling, FEELING_HISTORY_LIMIT);
