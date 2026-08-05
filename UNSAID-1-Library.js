@@ -10,7 +10,9 @@
 //    up, not having it narrated at you (configurable back to the old
 //    inline behavior if you prefer it). Feeling, want, and a short
 //    rolling history of each evolve independently, alongside a "core
-//    truth" (their first standalone thought) and how they feel about
+//    truth" — their first standalone thought, specifically prompted
+//    to be something real and significant rather than a passing
+//    reaction, since it becomes permanent — and how they feel about
 //    up to six specific other people — with a short history per
 //    relationship too, so a reaction can reference how things have
 //    shifted, not just where they stand right now. A scene with
@@ -34,13 +36,18 @@
 //    erased. When that's on, it's not a coin flip on every reveal:
 //    a character's feeling landing somewhere genuinely new, several
 //    times in a row without settling, builds real tracked tension —
-//    shown on their card once it crosses a threshold you set — and
-//    only once that tension has actually built is the AI ever
-//    offered the option to shift their core truth during an ordinary
-//    reveal. A steady feeling eases the tension back off. You can
-//    still ask directly at any time with "/peek <name> core" — that
-//    always works regardless of tension, since it's a deliberate
-//    choice rather than something that needs to be earned.
+//    shown on their card once it crosses a threshold you set. Even
+//    at that threshold, an ordinary shift is only offered to the AI
+//    once the player has actually looked into that character at
+//    least once via "/peek" — it shouldn't rewrite something they
+//    never got the chance to see. If tension keeps climbing well
+//    past that, unresolved, it eventually bypasses that requirement
+//    entirely: something can matter enough to happen whether or not
+//    anyone was watching. A steady feeling eases tension back off.
+//    "/peek <name> core" always works as a direct, deliberate check
+//    regardless of tension or whether they've been peeked before —
+//    and using it counts as having looked, satisfying that
+//    requirement for any future ordinary shift too.
 //
 // 2. Codex — tracks how many times each new name is mentioned, and
 //    only writes a Story Card once it clears a configurable threshold
@@ -97,6 +104,7 @@ const MAX_MEMORY_CONTEXT_LENGTH = 700; // keeps our block well under the ~1000-1
 const MAX_CARD_ENTRY_LENGTH = 1800;     // guards against an overlong AI-generated card entry
 const CORE_MEMORY_MARKER = "[UNSAID — core truths]";
 const CORE_MEMORY_MAX_ENTRIES = 8;  // caps how many characters' core truths ride in always-on memory
+const DRASTIC_TENSION_MULTIPLIER = 2; // tension can climb this many × the normal threshold when unresolved
 const MAX_RELATIONS_PER_CHARACTER = 6; // caps how many other characters' feelings each mind tracks
 const MENTION_TRACKING_CAP = 150; // caps how many never-carded names stay tracked at once
 
@@ -604,13 +612,18 @@ function syncMindToCard(name, compact, showStability, allowCoreShift, tensionThr
     : "";
   const tensionActive = allowCoreShift && typeof mind.tensionLevel === "number" &&
     typeof tensionThreshold === "number" && mind.tensionLevel >= tensionThreshold;
+  const tensionNote = tensionActive
+    ? (mind.revealedToPlayer
+      ? "increasingly tested"
+      : "increasingly tested — though a shift is on hold until you've actually peeked them at least once")
+    : null;
 
   let body;
   if (compact) {
     // old, denser one-line-per-field style
     const lines = [];
     if (mind.core) lines.push(`Core truth: ${mind.core}${stabilityNote}`);
-    if (tensionActive) lines.push(`⚡ Their sense of self feels increasingly tested.`);
+    if (tensionNote) lines.push(`⚡ Their sense of self feels ${tensionNote}.`);
     if (mind.coreHistory && mind.coreHistory.length > 0) {
       lines.push(`Formerly believed: ${mind.coreHistory[mind.coreHistory.length - 1]}`);
     }
@@ -626,7 +639,7 @@ function syncMindToCard(name, compact, showStability, allowCoreShift, tensionThr
     // plain layout — clear labels, spaced out, meant to be skimmed at a glance
     const sections = [];
     if (mind.core) sections.push(`Core truth:\n${mind.core}${stabilityNote}`);
-    if (tensionActive) sections.push(`⚡ Their sense of self feels increasingly tested — a core-shift may be near.`);
+    if (tensionNote) sections.push(`⚡ Their sense of self feels ${tensionNote}.`);
     if (mind.coreHistory && mind.coreHistory.length > 0) {
       sections.push(`Formerly believed:\n${mind.coreHistory[mind.coreHistory.length - 1]}`);
     }
@@ -668,6 +681,7 @@ function createMind() {
     coreHistory: [],
     coreSetTurn: null,
     tensionLevel: 0,
+    revealedToPlayer: false,
     feeling: null,
     feelingHistory: [],
     want: null,
@@ -766,14 +780,28 @@ function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift,
         : "");
     instruction = `\n[${chosen}'s unspoken reaction to ${target} — 2 italicized sentences: how they really feel about ${target} right now, and what they secretly want from this moment. ${target} can't perceive it.${coreNote}${relationNote}${historyNote}${wantNote}${varietyNote} Format: "《${chosen}, feeling, about ${target}: thought.》"]\n`;
   } else if (mind && mind.core) {
-    const tensionBuilt = allowCoreShift && typeof mind.tensionLevel === "number" &&
+    const atThreshold = allowCoreShift && typeof mind.tensionLevel === "number" &&
       typeof tensionThreshold === "number" && mind.tensionLevel >= tensionThreshold;
-    const shiftNote = tensionBuilt
-      ? ` Their feelings have been genuinely shifting for a while now, not settling back — if this moment plays into that and something has truly changed how they see themselves, you may format this instead as "《${chosen}, feeling, core-shift: new lasting truth.》" to replace their old anchor. Only do this if it's really earned.`
+    const atDrasticTier = allowCoreShift && typeof mind.tensionLevel === "number" &&
+      typeof tensionThreshold === "number" && mind.tensionLevel >= tensionThreshold * DRASTIC_TENSION_MULTIPLIER;
+    // an ordinary earned shift only gets offered once the player has
+    // actually looked into this character at least once (via /peek) —
+    // it shouldn't rewrite something they never got the chance to see.
+    // Sustained tension that climbs all the way to the drastic tier
+    // bypasses that: something can matter enough to happen regardless
+    // of whether anyone was watching.
+    const shiftEligible = atDrasticTier || (atThreshold && mind.revealedToPlayer);
+    const shiftNote = shiftEligible
+      ? (atDrasticTier && !mind.revealedToPlayer
+        ? ` Their feelings have been unraveling for a long time now, unresolved — something this significant would happen whether or not anyone's noticed. If it's truly earned, you may format this instead as "《${chosen}, feeling, core-shift: new lasting truth.》" to replace their old anchor.`
+        : ` Their feelings have been genuinely shifting for a while now, not settling back — if this moment plays into that and something has truly changed how they see themselves, you may format this instead as "《${chosen}, feeling, core-shift: new lasting truth.》" to replace their old anchor. Only do this if it's really earned.`)
       : "";
     instruction = `\n[${chosen}'s private thought — 2 italicized sentences: how they really feel right now, and what they secretly want. Consistent with "${mind.core}" and their feeling of ${mind.feeling} unless this scene shifts it.${historyNote}${wantNote}${varietyNote}${shiftNote} Format: "《${chosen}, feeling: thought.》" No one else perceives it.]\n`;
   } else {
-    instruction = `\n[${chosen}'s private thought — 2 italicized sentences: how they really feel right now, and what they secretly want. Format: "《${chosen}, feeling: thought.》" No one else perceives it.]\n`;
+    // this is the moment their very first private thought gets set — and
+    // whatever comes out of it becomes their permanent core truth, so it
+    // shouldn't read like a passing reaction to whatever's on screen
+    instruction = `\n[This is ${chosen}'s very first private thought — once revealed, it becomes a lasting truth about who they fundamentally are, something real and significant enough to define them going forward, not a fleeting reaction to this moment. 2 italicized sentences: what this deep truth is, and what they secretly want because of it. Format: "《${chosen}, feeling: thought.》" No one else perceives it.]\n`;
   }
 
   return fitInstructionToBudget(baseText, instruction);

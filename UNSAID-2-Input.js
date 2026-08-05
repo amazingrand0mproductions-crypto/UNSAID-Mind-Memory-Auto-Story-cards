@@ -20,6 +20,12 @@ const modifier = (text) => {
       const name = peekMatch[1].trim().slice(0, 60);
       state.unsaid.forcedPeek = name;
       state.unsaid.forcedPeekCore = !!peekCoreMatch;
+      // deliberately checking on someone counts as having seen into them —
+      // this is what lets an organic core-shift consider them eligible
+      // later, since it shouldn't happen to someone the player never
+      // actually looked at
+      if (!state.unsaid.minds[name]) state.unsaid.minds[name] = createMind();
+      state.unsaid.minds[name].revealedToPlayer = true;
       state.message = peekCoreMatch
         ? `🌗 Checking whether this moment has changed ${name}...`
         : `👁️ Peeking into ${name}'s thoughts...`;

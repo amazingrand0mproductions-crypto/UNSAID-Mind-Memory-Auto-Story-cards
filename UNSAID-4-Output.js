@@ -147,13 +147,17 @@ const modifier = (text) => {
         // a feeling that keeps landing somewhere genuinely new builds
         // quiet tension against the core truth; one that holds steady
         // eases it back off — this is what lets a core-shift feel earned
-        // rather than a coin flip available on every single reveal
+        // rather than a coin flip available on every single reveal.
+        // Capped at DRASTIC_TENSION_MULTIPLIER × the normal threshold,
+        // not the threshold itself, so it can keep climbing past the
+        // normal earn-point into "drastic" territory if it never resolves
         let tensionJustCrossed = false;
         if (!justShifted) {
           if (typeof mind.tensionLevel !== "number") mind.tensionLevel = 0;
           const wasBelowThreshold = mind.tensionLevel < cfg.tensionThreshold;
+          const tensionCap = cfg.tensionThreshold * DRASTIC_TENSION_MULTIPLIER;
           if (previousFeeling && previousFeeling !== feeling) {
-            mind.tensionLevel = Math.min(cfg.tensionThreshold, mind.tensionLevel + 1);
+            mind.tensionLevel = Math.min(tensionCap, mind.tensionLevel + 1);
           } else if (previousFeeling === feeling) {
             mind.tensionLevel = Math.max(0, mind.tensionLevel - 1);
           }
