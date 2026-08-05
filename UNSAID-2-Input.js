@@ -10,12 +10,19 @@ const modifier = (text) => {
     trackMentions(text);
 
     // typing "/peek <name>" forces an immediate thought reveal for that
-    // character on this turn, bypassing the usual chance roll and cooldown
-    const peekMatch = text.trim().match(/^\/peek\s+(.+)$/i);
+    // character on this turn, bypassing the usual chance roll and cooldown.
+    // "/peek <name> core" instead asks specifically whether this moment
+    // has been significant enough to redefine them (only does anything
+    // if core-shift is enabled in config).
+    const peekCoreMatch = text.trim().match(/^\/peek\s+(.+?)\s+core$/i);
+    const peekMatch = peekCoreMatch || text.trim().match(/^\/peek\s+(.+)$/i);
     if (peekMatch) {
       const name = peekMatch[1].trim().slice(0, 60);
       state.unsaid.forcedPeek = name;
-      state.message = `👁️ Peeking into ${name}'s thoughts...`;
+      state.unsaid.forcedPeekCore = !!peekCoreMatch;
+      state.message = peekCoreMatch
+        ? `🌗 Checking whether this moment has changed ${name}...`
+        : `👁️ Peeking into ${name}'s thoughts...`;
       return { text: "(A quiet moment passes.)" };
     }
 

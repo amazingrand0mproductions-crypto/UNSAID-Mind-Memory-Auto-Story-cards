@@ -16,7 +16,9 @@ const modifier = (text) => {
     text = stripConfigNoise(text); // keep script-only config/log text out of the AI's context
 
     const forcedPeek = state.unsaid.forcedPeek;
+    const forcedPeekCore = state.unsaid.forcedPeekCore;
     state.unsaid.forcedPeek = null; // consume it whether or not it ends up firing
+    state.unsaid.forcedPeekCore = null;
 
     if (!cfg.enabled) {
       state.unsaid.pending = null;
@@ -30,8 +32,25 @@ const modifier = (text) => {
     const active = cfg.cast.filter(name => nameAppears(name, recent));
 
     // --- /peek: a forced reveal always wins the turn it's used ---
-    if (forcedPeek) {
-      const fitted = buildAndFitThoughtInstruction(forcedPeek, active, text);
+    if (forcedPeek && forcedPeekCore && !cfg.allowCoreShift) {
+      // asked for a core check, but the feature's off — say so plainly
+      // rather than silently falling back to an ordinary peek
+      state.message = `🌗 Core-shift checks are off — turn on "Allow major events to rewrite a core truth" in the config card first.`;
+      state.unsaid.pending = null;
+      state.unsaid.codex.pendingName = null;
+      return { text };
+    }
+
+    if (forcedPeek && forcedPeekCore) {
+      const instruction = buildCoreCheckInstruction(forcedPeek, state.unsaid.minds[forcedPeek], cfg.tensionThreshold);
+      const fitted = fitInstructionToBudget(text, instruction);
+      if (fitted) {
+        state.unsaid.pending = forcedPeek;
+        state.unsaid.codex.pendingName = null;
+        return { text: text + fitted };
+      }
+    } else if (forcedPeek) {
+      const fitted = buildAndFitThoughtInstruction(forcedPeek, active, text, cfg.allowCoreShift, cfg.tensionThreshold);
       if (fitted) {
         state.unsaid.pending = forcedPeek;
         state.unsaid.codex.pendingName = null;
@@ -68,9 +87,16 @@ const modifier = (text) => {
         return !mind || (state.unsaid.turn - mind.lastTurn) >= cfg.cooldown;
       });
 
-      if (eligible.length > 0 && Math.random() < cfg.chance) {
+      // a reveal competing for attention right when the player just took
+      // a deliberate action can feel like it's stepping on them — ease
+      // off specifically for Do/Say, leave Continue/Story untouched
+      const actionType = getLastActionType();
+      const isPlayerAction = actionType === "do" || actionType === "say";
+      const effectiveChance = (cfg.reduceDuringActions && isPlayerAction) ? cfg.chance * 0.5 : cfg.chance;
+
+      if (eligible.length > 0 && Math.random() < effectiveChance) {
         const chosen = pickBySilence(eligible, state.unsaid.turn);
-        const fitted = buildAndFitThoughtInstruction(chosen, active, text);
+        const fitted = buildAndFitThoughtInstruction(chosen, active, text, cfg.allowCoreShift, cfg.tensionThreshold);
         if (fitted) {
           state.unsaid.pending = chosen;
           return { text: text + fitted };

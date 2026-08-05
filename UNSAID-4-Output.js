@@ -6,10 +6,6 @@ const modifier = (text) => {
   try {
     const cfg = readUnsaidConfig();
 
-    // count mentions from the AI's own response text — combined with
-    // Input's count, this is the full picture Codex uses for the threshold
-    trackMentions(text);
-
     // --- Codex: parse the hidden profile block and build a Story Card ---
     // Checked regardless of whether we were expecting one: on cache
     // efficient models (or after any mismatch between what Context asked
@@ -66,7 +62,7 @@ const modifier = (text) => {
           }
           // if this character already had tracked feelings before their
           // card existed, show them on the card right away
-          syncMindToCard(name);
+          syncMindToCard(name, cfg.compactCardNotes, cfg.showCoreStability, cfg.allowCoreShift, cfg.tensionThreshold);
         }
       }
     }
@@ -86,28 +82,61 @@ const modifier = (text) => {
     state.unsaid.codex.pendingName = null;
     state.unsaid.codex.pendingType = null;
 
+    // count mentions only now that any 【CARD】 scaffolding has been
+    // stripped out — otherwise the script's own field labels (and the
+    // word "CARD" itself) can get tracked as if they were story content
+    // and eventually Codexed into a bogus card
+    trackMentions(text);
+
     // --- Private thought reveal ---
     if (state.unsaid.pending) {
       const name = state.unsaid.pending;
       const pattern = new RegExp(
-        `《${escapeForRegex(name)},\\s*([a-zA-Z]+)(?:,\\s*about\\s+([^:》]+))?:\\s*([^》]*)》`,
+        `《${escapeForRegex(name)},\\s*([a-zA-Z]+)(?:,\\s*(about\\s+[^:》]+|core-shift))?:\\s*([^》]*)》`,
         "i"
       );
       const thoughtMatch = text.match(pattern);
 
       if (thoughtMatch) {
         const feeling = thoughtMatch[1].trim().toLowerCase();
-        const about = thoughtMatch[2] ? thoughtMatch[2].trim() : null;
+        const modifier2 = thoughtMatch[2] ? thoughtMatch[2].trim() : null;
+        const isCoreShift = modifier2 && /^core-shift$/i.test(modifier2);
+        const about = modifier2 && !isCoreShift ? modifier2.replace(/^about\s+/i, "").trim() : null;
         const thought = thoughtMatch[3].trim();
         const { wantSentence } = splitThoughtSentences(thought);
 
-        text = text.replace(pattern, (full) =>
-          full.trim().startsWith("*") ? full : `*${full.trim()}*`
-        );
+        // default: the reveal never appears in the story at all — it's
+        // private, so it goes straight to the character's own card notes
+        // instead of being narrated into the shared story text. Only
+        // shown inline if the player has explicitly opted into that.
+        if (cfg.showThoughtsInStory) {
+          text = text.replace(pattern, (full) =>
+            full.trim().startsWith("*") ? full : `*${full.trim()}*`
+          );
+        } else {
+          text = text.replace(pattern, "").replace(/\n{3,}/g, "\n\n").trimEnd();
+        }
 
         if (!state.unsaid.minds[name]) state.unsaid.minds[name] = createMind();
         const mind = state.unsaid.minds[name];
-        if (!mind.core && !about) mind.core = thought;
+        const previousFeeling = mind.feeling;
+        let justShifted = false;
+        if (isCoreShift && cfg.allowCoreShift && thought && thought !== mind.core) {
+          // a deliberate, rare replacement of the anchor itself — the old
+          // one is kept, not erased, so the shift can still be referenced.
+          // Guarded against a no-op "shift" to the same text, which would
+          // otherwise burn a history slot and leave the current core
+          // duplicated as its own "former" belief.
+          if (!mind.coreHistory) mind.coreHistory = [];
+          if (mind.core) pushCapped(mind.coreHistory, mind.core, 2);
+          mind.core = thought;
+          mind.coreSetTurn = state.unsaid.turn;
+          mind.tensionLevel = 0; // the earned moment resolves the tension that built to it
+          justShifted = true;
+        } else if (!mind.core && !about) {
+          mind.core = thought;
+          mind.coreSetTurn = state.unsaid.turn;
+        }
         mind.feeling = feeling;
         if (wantSentence) mind.want = wantSentence;
         mind.lastThoughtText = thought;
@@ -115,19 +144,44 @@ const modifier = (text) => {
         if (!mind.feelingHistory) mind.feelingHistory = [];
         pushCapped(mind.feelingHistory, feeling, FEELING_HISTORY_LIMIT);
 
+        // a feeling that keeps landing somewhere genuinely new builds
+        // quiet tension against the core truth; one that holds steady
+        // eases it back off — this is what lets a core-shift feel earned
+        // rather than a coin flip available on every single reveal
+        let tensionJustCrossed = false;
+        if (!justShifted) {
+          if (typeof mind.tensionLevel !== "number") mind.tensionLevel = 0;
+          const wasBelowThreshold = mind.tensionLevel < cfg.tensionThreshold;
+          if (previousFeeling && previousFeeling !== feeling) {
+            mind.tensionLevel = Math.min(cfg.tensionThreshold, mind.tensionLevel + 1);
+          } else if (previousFeeling === feeling) {
+            mind.tensionLevel = Math.max(0, mind.tensionLevel - 1);
+          }
+          tensionJustCrossed = cfg.allowCoreShift && wasBelowThreshold && mind.tensionLevel >= cfg.tensionThreshold;
+        }
+
         if (about) {
           recordRelation(name, about, feeling);
         }
         // keep the character's own card notes showing their current state —
         // visible on the card, but never sent to the AI as context
-        syncMindToCard(name);
+        syncMindToCard(name, cfg.compactCardNotes, cfg.showCoreStability, cfg.allowCoreShift, cfg.tensionThreshold);
 
-        state.message = `💭 ${name} is thinking something they're not saying...`;
+        if (isCoreShift && cfg.allowCoreShift) {
+          state.message = `🌗 ${name} has been fundamentally changed — check their Story Card.`;
+        } else if (tensionJustCrossed) {
+          state.message = `⚡ ${name}'s sense of self is starting to waver...`;
+        } else {
+          state.message = cfg.showThoughtsInStory
+            ? `💭 ${name} is thinking something they're not saying...`
+            : `💭 ${name} is secretly feeling ${feeling} — check their Story Card for the rest.`;
+        }
       }
       state.unsaid.pending = null;
     }
 
     if (cfg.memorySyncEnabled) syncCoreMemory(cfg.memoryMaxEntries);
+    syncFrontMemoryHint(cfg.subtleHints);
 
     return { text };
   } catch (e) {

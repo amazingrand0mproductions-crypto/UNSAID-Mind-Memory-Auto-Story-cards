@@ -4,17 +4,43 @@
 // 1. Private thoughts — occasionally reveals what a character is
 //    really feeling and thinking but not saying out loud: one
 //    sentence on how they feel right now, one on what they secretly
-//    want. Feeling, want, and a short rolling history of each evolve
-//    independently, alongside a "core truth" (their first standalone
-//    thought) and how they feel about up to six specific other
-//    people — with a short history per relationship too, so a
-//    reaction can reference how things have shifted, not just where
-//    they stand right now. A scene with someone they already have
-//    history with pulls from that instead of a random new reaction.
-//    Type "/peek <name>" as an action to force an immediate reveal on
-//    demand. Every character's current state is also kept visible on
-//    their own Story Card's notes — never their entry — so it's
-//    readable at a glance without ever costing the AI any context.
+//    want. By default, a reveal never appears in the story itself —
+//    it's written straight to that character's own Story Card notes,
+//    so learning what someone's really thinking means looking them
+//    up, not having it narrated at you (configurable back to the old
+//    inline behavior if you prefer it). Feeling, want, and a short
+//    rolling history of each evolve independently, alongside a "core
+//    truth" (their first standalone thought) and how they feel about
+//    up to six specific other people — with a short history per
+//    relationship too, so a reaction can reference how things have
+//    shifted, not just where they stand right now. A scene with
+//    someone they already have history with pulls from that instead
+//    of a random new reaction, and each reveal is nudged to avoid
+//    repeating a character's own last wording. Type "/peek <name>"
+//    as an action to force an immediate reveal on demand. A live
+//    style hint — "let hidden feelings color actions without stating
+//    them" — rides in frontMemory, the part of context closest to
+//    the point of generation, separate from the factual summary in
+//    Memory. A reveal is also less likely to fire during the
+//    player's own Do/Say actions specifically, so it doesn't compete
+//    for attention right when they've taken a deliberate action.
+//    Everything tracked about a character is written to their own
+//    card's notes in a plain, clearly labeled layout by default —
+//    meant to be read at a glance, not parsed — including how long
+//    their current core truth has held, with a denser one-line style
+//    available too. A core truth is permanent by default — a stable
+//    anchor — but can optionally be allowed to shift after something
+//    genuinely major, with the old one kept on file rather than
+//    erased. When that's on, it's not a coin flip on every reveal:
+//    a character's feeling landing somewhere genuinely new, several
+//    times in a row without settling, builds real tracked tension —
+//    shown on their card once it crosses a threshold you set — and
+//    only once that tension has actually built is the AI ever
+//    offered the option to shift their core truth during an ordinary
+//    reveal. A steady feeling eases the tension back off. You can
+//    still ask directly at any time with "/peek <name> core" — that
+//    always works regardless of tension, since it's a deliberate
+//    choice rather than something that needs to be earned.
 //
 // 2. Codex — tracks how many times each new name is mentioned, and
 //    only writes a Story Card once it clears a configurable threshold
@@ -48,6 +74,13 @@ const UNSAID_DEFAULTS = {
   enabled: true,
   codexEnabled: true,
   memorySyncEnabled: true,
+  showThoughtsInStory: false, // when false, reveals go to the character's card, not the narrative
+  subtleHints: true,           // let hidden feelings quietly color visible actions/body language
+  allowCoreShift: false,        // whether a major event can ever rewrite a character's core truth
+  tensionThreshold: 3,            // consecutive different feelings before a core-shift feels earned
+  compactCardNotes: false,       // plain, spaced-out card layout by default; true = old terse one-liner style
+  showCoreStability: true,        // show how long a core truth has held on the card
+  reduceDuringActions: true,       // less likely to interrupt your own Do/Say actions specifically
   chance: 0.3,        // chance per turn a thought fires, when someone qualifies
   cooldown: 3,          // turns a character must wait before thinking again
   mentionThreshold: 3,   // a name needs MORE than this many mentions before Codex cards it
@@ -78,7 +111,9 @@ const CODEX_STOPWORDS = new Set([
   "Sometimes", "Always", "Never", "Really", "Actually", "Honestly",
   "Wait", "Look", "Listen", "Right", "Alright", "Hey", "Huh", "Hmm", "Ah",
   "Your", "My", "His", "Her", "Its", "Our", "Their", "These", "Those",
-  "Some", "Any", "All", "Each", "Every", "Nothing", "Something", "Anything"
+  "Some", "Any", "All", "Each", "Every", "Nothing", "Something", "Anything",
+  "Turn", "Chapter", "Part", "Scene", "Day", "Night", "Morning",
+  "Evening", "Afternoon"
 ]);
 
 const CODEX_LOCATION_HINTS = /\b(city|state|street|avenue|canyon|terminal|park|building|tower|island|country|nation|kingdom|realm|district|region|planet|world|base|facility|academy|university|bridge|river|mountain|forest|desert|battleground|warzone|hall|tavern|inn|castle|fortress|temple)\b/i;
@@ -99,7 +134,7 @@ const CARD_TEMPLATES = {
   faction: FACTION_CARD_FIELDS
 };
 
-const MIND_NOTES_MARKER = "[UNSAID — current state]";
+const MIND_NOTES_MARKER = "💭 Inner Life — private, not visible to other characters";
 const CAST_LIST_MARKER = "===";
 const CODEX_MAX_ATTEMPTS = 3; // give up on a name after this many failed tries
 
@@ -160,23 +195,43 @@ function ensureConfigCard() {
     card.keys = "unsaid config";
     card.type = "config";
     card.entry =
+      "-- General --\n" +
       "> Enable UNSAID: true\n" +
       "> Enable Codex: true\n" +
-      "> Sync core truths to always-on memory: true\n" +
+      "-- Private Thoughts --\n" +
       "> Chance of a thought per turn (0 to 1): 0.3\n" +
       "> Turns before the same character can think again: 3\n" +
+      "> Show private thoughts in the story text: false\n" +
+      "> Let hidden feelings subtly color actions: true\n" +
+      "> Reduce interruptions during your own actions: true\n" +
+      "-- Core Truth --\n" +
+      "> Allow major events to rewrite a core truth: false\n" +
+      "> Show how long a core truth has held: true\n" +
+      "> Feeling shifts needed before a core-shift feels earned: 3\n" +
+      "-- Card Notes --\n" +
+      "> Use compact card notes instead of plain layout: false\n" +
+      "-- Codex --\n" +
       "> Mentions needed before Codex creates a card: 3\n" +
       "> Minimum turns between Codex cards: 5\n" +
       "> Codex retries before giving up on a name: 3\n" +
       "> Reset Codex tracking now: false\n" +
-      "> Characters remembered in long-term memory: 8\n" +
-      "> Player character (skip when Codexing): ";
+      "> Player character (skip when Codexing): \n" +
+      "-- Memory --\n" +
+      "> Sync core truths to always-on memory: true\n" +
+      "> Characters remembered in long-term memory: 8";
     card.description =
       "UNSAID Config — what each setting above does:\n" +
       "- Enable UNSAID: master switch for the whole script (private thoughts and Codex together). False turns everything off.\n" +
       "- Enable Codex: turns automatic Story Card generation on or off by itself. Turn this off to keep private thoughts without new cards being made.\n" +
       "- Sync core truths to always-on memory: keeps a short, capped list of characters' core truths in your adventure's Memory, which the AI always sees — unlike Story Cards, which only appear when triggered. This is what lets something a character revealed on turn 1 still reach the AI on turn 1000.\n" +
       "- Chance of a thought per turn: how likely (0 to 1) it is that an eligible, active character reveals a private thought on any given turn. Higher means more frequent reveals.\n" +
+      "- Show private thoughts in the story text: when false (default), a reveal never appears in your story — it's written straight to that character's own Story Card instead, so you look them up rather than having their private thoughts narrated at you. Set to true for the old behavior: an italicized line shown right in the story.\n" +
+      "- Let hidden feelings subtly color actions: when true (default), a character's hidden feeling is allowed to quietly show through in their body language and tone in the actual story — a tight smile, a held breath — without ever stating the feeling outright or giving away their private thought. Turn off for characters who should read as unreadable.\n" +
+      "- Allow major events to rewrite a core truth: a character's core truth is normally permanent — set once, from their first real thought, and never touched again, so it stays a stable anchor. Turn this on to let a genuinely major story event replace it instead, when the AI judges one has actually happened; their old core truth is kept on file rather than erased.\n" +
+      "- Use compact card notes instead of plain layout: by default, a character's card notes are laid out plainly — clear labels, spaced out, easy to skim. Turn this on for the older, denser one-line-per-field style instead.\n" +
+      "- Show how long a core truth has held: adds a small note on the card showing how many turns a character's current core truth has stood — a quiet sense of how settled or recent it is.\n" +
+      "- Feeling shifts needed before a core-shift feels earned: only matters if core-shift is on above. A character's feeling changing to something genuinely new, again and again, builds quiet internal tension — once it's changed this many times in a row, the AI is actually offered the chance to rewrite their core truth on an ordinary reveal, not just when you explicitly check with /peek. A steady feeling resets the count. Higher means it takes longer to earn; lower means it can happen sooner.\n" +
+      "- Reduce interruptions during your own actions: makes a private thought less likely to fire specifically during your own Do or Say actions, so a reveal doesn't compete for attention right when you've taken a deliberate action. Continue and Story actions are unaffected.\n" +
       "- Turns before the same character can think again: a cooldown, in turns, before that same character is eligible for another thought — keeps one character from dominating.\n" +
       "- Mentions needed before Codex creates a card: how many times a new name must appear before Codex writes a card for it, so background one-off names don't get cards of their own.\n" +
       "- Minimum turns between Codex cards: how many turns must pass between one Codex card and the next, regardless of how many names qualify — keeps Codex from taking over several turns in a row.\n" +
@@ -204,6 +259,30 @@ function readUnsaidConfig() {
 
   const memSyncMatch = card.entry.match(/always-on memory:\s*(true|false)/i);
   if (memSyncMatch) cfg.memorySyncEnabled = memSyncMatch[1].toLowerCase() === "true";
+
+  const showInStoryMatch = card.entry.match(/Show private thoughts in the story text:\s*(true|false)/i);
+  if (showInStoryMatch) cfg.showThoughtsInStory = showInStoryMatch[1].toLowerCase() === "true";
+
+  const subtleHintsMatch = card.entry.match(/subtly color actions:\s*(true|false)/i);
+  if (subtleHintsMatch) cfg.subtleHints = subtleHintsMatch[1].toLowerCase() === "true";
+
+  const coreShiftMatch = card.entry.match(/rewrite a core truth:\s*(true|false)/i);
+  if (coreShiftMatch) cfg.allowCoreShift = coreShiftMatch[1].toLowerCase() === "true";
+
+  const compactMatch = card.entry.match(/compact card notes instead of plain layout:\s*(true|false)/i);
+  if (compactMatch) cfg.compactCardNotes = compactMatch[1].toLowerCase() === "true";
+
+  const stabilityMatch = card.entry.match(/how long a core truth has held:\s*(true|false)/i);
+  if (stabilityMatch) cfg.showCoreStability = stabilityMatch[1].toLowerCase() === "true";
+
+  const tensionMatch = card.entry.match(/core-shift feels earned:\s*(\d+)/i);
+  if (tensionMatch) {
+    const parsedTension = parseInt(tensionMatch[1], 10);
+    if (!isNaN(parsedTension)) cfg.tensionThreshold = Math.max(1, parsedTension);
+  }
+
+  const reduceMatch = card.entry.match(/Reduce interruptions during your own actions:\s*(true|false)/i);
+  if (reduceMatch) cfg.reduceDuringActions = reduceMatch[1].toLowerCase() === "true";
 
   const chanceMatch = card.entry.match(/thought per turn[^:]*:\s*([\d.]+)/i);
   if (chanceMatch) {
@@ -254,7 +333,11 @@ function readUnsaidConfig() {
     if (!isNaN(parsedMemCount)) cfg.memoryMaxEntries = Math.max(0, parsedMemCount);
   }
 
-  const playerMatch = card.entry.match(/Player character \(skip when Codexing\):\s*(.*)/i);
+  // [ \t]* rather than \s* here on purpose — \s* would happily cross the
+  // newline when this value is blank and land on the next line (which,
+  // now that settings are grouped under section headers, could be a
+  // header like "-- Memory --" getting captured as the player's name)
+  const playerMatch = card.entry.match(/Player character \(skip when Codexing\):[ \t]*(.*)/i);
   if (playerMatch) cfg.playerName = playerMatch[1].trim();
 
   const markerIdx = card.description.indexOf(CAST_LIST_MARKER);
@@ -272,17 +355,30 @@ function readUnsaidConfig() {
   // whatever values were actually readable above. The notes/description
   // above is left alone so player edits to the explanations aren't lost.
   card.entry =
+    "-- General --\n" +
     `> Enable UNSAID: ${cfg.enabled}\n` +
     `> Enable Codex: ${cfg.codexEnabled}\n` +
-    `> Sync core truths to always-on memory: ${cfg.memorySyncEnabled}\n` +
+    "-- Private Thoughts --\n" +
     `> Chance of a thought per turn (0 to 1): ${cfg.chance}\n` +
     `> Turns before the same character can think again: ${cfg.cooldown}\n` +
+    `> Show private thoughts in the story text: ${cfg.showThoughtsInStory}\n` +
+    `> Let hidden feelings subtly color actions: ${cfg.subtleHints}\n` +
+    `> Reduce interruptions during your own actions: ${cfg.reduceDuringActions}\n` +
+    "-- Core Truth --\n" +
+    `> Allow major events to rewrite a core truth: ${cfg.allowCoreShift}\n` +
+    `> Show how long a core truth has held: ${cfg.showCoreStability}\n` +
+    `> Feeling shifts needed before a core-shift feels earned: ${cfg.tensionThreshold}\n` +
+    "-- Card Notes --\n" +
+    `> Use compact card notes instead of plain layout: ${cfg.compactCardNotes}\n` +
+    "-- Codex --\n" +
     `> Mentions needed before Codex creates a card: ${cfg.mentionThreshold}\n` +
     `> Minimum turns between Codex cards: ${cfg.codexCooldown}\n` +
     `> Codex retries before giving up on a name: ${cfg.codexMaxAttempts}\n` +
     `> Reset Codex tracking now: false\n` +
-    `> Characters remembered in long-term memory: ${cfg.memoryMaxEntries}\n` +
-    `> Player character (skip when Codexing): ${cfg.playerName}`;
+    `> Player character (skip when Codexing): ${cfg.playerName}\n` +
+    "-- Memory --\n" +
+    `> Sync core truths to always-on memory: ${cfg.memorySyncEnabled}\n` +
+    `> Characters remembered in long-term memory: ${cfg.memoryMaxEntries}`;
 
   return cfg;
 }
@@ -352,7 +448,10 @@ function classifyCodexEntry(name, text) {
   if (CODEX_FACTION_HINTS.test(name)) return "faction";
   if (CODEX_ITEM_HINTS.test(name)) return "item";
 
-  const nearLocation = new RegExp(`(in|at|near|to|from|through|inside|outside)\\s+${escapeForRegex(name)}\\b`, "i");
+  // "at"/"to"/"from"/"near" are too common before a PERSON's name too
+  // ("looks at Aria", "walks to Marcus") to reliably signal a place —
+  // only the more spatially-specific ones are used here
+  const nearLocation = new RegExp(`(in|inside|outside|through)\\s+${escapeForRegex(name)}\\b`, "i");
   if (nearLocation.test(text)) return "location";
 
   const nearItem = new RegExp(`(wields?|holds?|wearing|wears|using|uses|draws?|grips?|picks?\\s+up|holsters?)\\s+(the\\s+|a\\s+|an\\s+|his\\s+|her\\s+|their\\s+)?${escapeForRegex(name)}\\b`, "i");
@@ -493,25 +592,56 @@ function recordRelation(name, other, feeling) {
 // already gets an equivalent (and more detailed) picture whenever a
 // thought actually fires, so there's no need to duplicate it into the
 // part of the card that gets sent to the model every time it triggers.
-function syncMindToCard(name) {
+function syncMindToCard(name, compact, showStability, allowCoreShift, tensionThreshold) {
   const mind = state.unsaid.minds[name];
   if (!mind) return;
 
   const card = storyCards.find(c => c.title.toLowerCase() === name.toLowerCase() && c.type === "character");
   if (!card) return;
 
-  const lines = [];
-  if (mind.core) lines.push(`Core truth: ${mind.core}`);
-  if (mind.feeling) lines.push(`Current feeling: ${mind.feeling}`);
-  if (mind.want) lines.push(`Current want: ${mind.want}`);
-  if (mind.relationOrder && mind.relationOrder.length > 0) {
-    lines.push("Feelings toward others:");
-    mind.relationOrder.forEach(other => lines.push(`  ${other}: ${mind.relations[other]}`));
+  const stabilityNote = showStability && typeof mind.coreSetTurn === "number" && state.unsaid.turn > mind.coreSetTurn
+    ? ` (steady for ${state.unsaid.turn - mind.coreSetTurn} turn${state.unsaid.turn - mind.coreSetTurn === 1 ? "" : "s"})`
+    : "";
+  const tensionActive = allowCoreShift && typeof mind.tensionLevel === "number" &&
+    typeof tensionThreshold === "number" && mind.tensionLevel >= tensionThreshold;
+
+  let body;
+  if (compact) {
+    // old, denser one-line-per-field style
+    const lines = [];
+    if (mind.core) lines.push(`Core truth: ${mind.core}${stabilityNote}`);
+    if (tensionActive) lines.push(`⚡ Their sense of self feels increasingly tested.`);
+    if (mind.coreHistory && mind.coreHistory.length > 0) {
+      lines.push(`Formerly believed: ${mind.coreHistory[mind.coreHistory.length - 1]}`);
+    }
+    if (mind.feeling) lines.push(`Current feeling: ${mind.feeling}`);
+    if (mind.want) lines.push(`Current want: ${mind.want}`);
+    if (mind.relationOrder && mind.relationOrder.length > 0) {
+      lines.push("Feelings toward others:");
+      mind.relationOrder.forEach(other => lines.push(`  ${other}: ${mind.relations[other]}`));
+    }
+    if (lines.length === 0) return;
+    body = lines.join("\n");
+  } else {
+    // plain layout — clear labels, spaced out, meant to be skimmed at a glance
+    const sections = [];
+    if (mind.core) sections.push(`Core truth:\n${mind.core}${stabilityNote}`);
+    if (tensionActive) sections.push(`⚡ Their sense of self feels increasingly tested — a core-shift may be near.`);
+    if (mind.coreHistory && mind.coreHistory.length > 0) {
+      sections.push(`Formerly believed:\n${mind.coreHistory[mind.coreHistory.length - 1]}`);
+    }
+    if (mind.feeling) sections.push(`Currently feeling: ${mind.feeling}`);
+    if (mind.want) sections.push(`Wants: ${mind.want}`);
+    if (mind.relationOrder && mind.relationOrder.length > 0) {
+      const relLines = mind.relationOrder.map(other => `  • ${other} — ${mind.relations[other]}`);
+      sections.push(`Feelings toward others:\n${relLines.join("\n")}`);
+    }
+    if (sections.length === 0) return;
+    body = sections.join("\n\n");
   }
-  if (lines.length === 0) return;
 
   const base = (card.description || "").split(MIND_NOTES_MARKER)[0].replace(/\s+$/, "");
-  card.description = `${base}\n\n${MIND_NOTES_MARKER}\n${lines.join("\n")}`.trim();
+  card.description = `${base}\n\n${MIND_NOTES_MARKER}\n${body}`.trim();
 }
 
 // best-effort split of a two-sentence thought into a feeling-sentence
@@ -535,6 +665,9 @@ function forgetMentionTracking(name) {
 function createMind() {
   return {
     core: null,
+    coreHistory: [],
+    coreSetTurn: null,
+    tensionLevel: 0,
     feeling: null,
     feelingHistory: [],
     want: null,
@@ -575,16 +708,43 @@ function pickBySilence(names, currentTurn) {
   return names[names.length - 1];
 }
 
-function buildAndFitThoughtInstruction(chosen, active, baseText) {
+// used only by "/peek <name> core" — explicitly asks whether this
+// moment is significant enough to redefine the character, rather than
+// leaving it purely to chance during an ordinary reveal
+function buildCoreCheckInstruction(chosen, mind, tensionThreshold) {
+  const coreNote = mind && mind.core ? ` Their current anchor: "${mind.core}".` : "";
+  const tensionNote = mind && typeof mind.tensionLevel === "number" && typeof tensionThreshold === "number"
+    ? (mind.tensionLevel >= tensionThreshold
+      ? " Their feelings have been genuinely unsettled for a while now — this may well be the moment."
+      : " Their feelings have been fairly steady lately, for what that's worth.")
+    : "";
+  return `\n[Consider whether recent events have genuinely, permanently changed how ${chosen} sees themselves — not just a passing mood.${coreNote}${tensionNote} If yes, reveal it as "《${chosen}, feeling, core-shift: new lasting truth.》" (2 italicized sentences). If nothing that significant has happened, don't force it — continue the story normally with no reveal at all.]\n`;
+}
+
+function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift, tensionThreshold) {
   const mind = state.unsaid.minds[chosen];
 
   const others = (active || []).filter(n => n !== chosen);
   // prefer reacting to someone they already have history with, over
-  // introducing a brand new reaction at random
+  // introducing a brand new reaction at random — and among those, the
+  // most recently relevant relationship wins rather than a random old
+  // one that hasn't mattered in a while (relationOrder is oldest-first,
+  // so the last entry present is the most recently touched)
   const withHistory = others.filter(n => mind && mind.relations && mind.relations[n]);
-  const target = withHistory.length > 0
-    ? withHistory[Math.floor(Math.random() * withHistory.length)]
-    : (others.length > 0 ? others[Math.floor(Math.random() * others.length)] : null);
+  let target = null;
+  if (withHistory.length > 0 && mind && mind.relationOrder) {
+    for (let i = mind.relationOrder.length - 1; i >= 0; i--) {
+      if (withHistory.includes(mind.relationOrder[i])) {
+        target = mind.relationOrder[i];
+        break;
+      }
+    }
+  }
+  if (!target) {
+    target = withHistory.length > 0
+      ? withHistory[Math.floor(Math.random() * withHistory.length)]
+      : (others.length > 0 ? others[Math.floor(Math.random() * others.length)] : null);
+  }
 
   const historyNote = mind && mind.feelingHistory && mind.feelingHistory.length > 1
     ? ` Their feelings lately have gone: ${mind.feelingHistory.join(" → ")}.`
@@ -606,7 +766,12 @@ function buildAndFitThoughtInstruction(chosen, active, baseText) {
         : "");
     instruction = `\n[${chosen}'s unspoken reaction to ${target} — 2 italicized sentences: how they really feel about ${target} right now, and what they secretly want from this moment. ${target} can't perceive it.${coreNote}${relationNote}${historyNote}${wantNote}${varietyNote} Format: "《${chosen}, feeling, about ${target}: thought.》"]\n`;
   } else if (mind && mind.core) {
-    instruction = `\n[${chosen}'s private thought — 2 italicized sentences: how they really feel right now, and what they secretly want. Consistent with "${mind.core}" and their feeling of ${mind.feeling} unless this scene shifts it.${historyNote}${wantNote}${varietyNote} Format: "《${chosen}, feeling: thought.》" No one else perceives it.]\n`;
+    const tensionBuilt = allowCoreShift && typeof mind.tensionLevel === "number" &&
+      typeof tensionThreshold === "number" && mind.tensionLevel >= tensionThreshold;
+    const shiftNote = tensionBuilt
+      ? ` Their feelings have been genuinely shifting for a while now, not settling back — if this moment plays into that and something has truly changed how they see themselves, you may format this instead as "《${chosen}, feeling, core-shift: new lasting truth.》" to replace their old anchor. Only do this if it's really earned.`
+      : "";
+    instruction = `\n[${chosen}'s private thought — 2 italicized sentences: how they really feel right now, and what they secretly want. Consistent with "${mind.core}" and their feeling of ${mind.feeling} unless this scene shifts it.${historyNote}${wantNote}${varietyNote}${shiftNote} Format: "《${chosen}, feeling: thought.》" No one else perceives it.]\n`;
   } else {
     instruction = `\n[${chosen}'s private thought — 2 italicized sentences: how they really feel right now, and what they secretly want. Format: "《${chosen}, feeling: thought.》" No one else perceives it.]\n`;
   }
@@ -620,6 +785,36 @@ function buildAndFitThoughtInstruction(chosen, active, baseText) {
 // The adventure's Memory (state.memory.context), by contrast, is
 // always included regardless of how many turns have passed. Keeping
 // a short, capped list of characters' core truths there means
+// history is a real, read-only global the platform provides — each
+// entry has a type: "do", "say", "story", "continue", "start", "see".
+// Used to tell a player-driven action apart from a passive one.
+function getLastActionType() {
+  if (typeof history !== "undefined" && Array.isArray(history) && history.length > 0) {
+    return history[history.length - 1].type || null;
+  }
+  return null;
+}
+
+const FRONT_MEMORY_MARKER = "[UNSAID hint]";
+
+// frontMemory sits at the very end of context, right after the last
+// player action — closer to the point of generation than anything
+// else a script can set. That makes it the right place for a live
+// style instruction (as opposed to state.memory.context, which is
+// better suited to background facts since it sits at the very start).
+// Kept as one closed, complete sentence on purpose: an unfinished one
+// here risks the AI trying to literally continue it in its output.
+function syncFrontMemoryHint(subtleHints) {
+  if (!state.memory || typeof state.memory !== "object") return;
+  const existing = (state.memory.frontMemory || "").split(FRONT_MEMORY_MARKER)[0].replace(/\s+$/, "");
+  if (!subtleHints) {
+    state.memory.frontMemory = existing;
+    return;
+  }
+  const hint = `${FRONT_MEMORY_MARKER} Let each character's private feelings subtly color their actions and tone right now, without ever stating them outright.`;
+  state.memory.frontMemory = existing ? `${existing}\n\n${hint}` : hint;
+}
+
 // something a character revealed on turn 1 can still reach the AI on
 // turn 1000, not just while their card happens to get triggered.
 function syncCoreMemory(maxEntries) {
@@ -639,22 +834,38 @@ function syncCoreMemory(maxEntries) {
 
   const lines = names.map(name => {
     const mind = state.unsaid.minds[name];
-    const lastRelation = mind.relationOrder && mind.relationOrder.length > 0
-      ? mind.relationOrder[mind.relationOrder.length - 1]
-      : null;
-    const relationNote = lastRelation ? ` (feels ${mind.relations[lastRelation]} toward ${lastRelation})` : "";
-    const wantNote = mind.want ? `, currently wants: ${mind.want}` : "";
+    const recentRelations = mind.relationOrder
+      ? mind.relationOrder.slice(-2).reverse()
+      : [];
+    const relationNote = recentRelations.length > 0
+      ? ` (${recentRelations.map(other => `feels ${mind.relations[other]} toward ${other}`).join("; ")})`
+      : "";
+    const feelingNote = mind.feeling ? `, currently feeling ${mind.feeling}` : "";
+    const wantNote = mind.want ? `, wants: ${mind.want}` : "";
+    const shiftNote = mind.coreHistory && mind.coreHistory.length > 0
+      ? ` — formerly believed: "${mind.coreHistory[mind.coreHistory.length - 1]}"`
+      : "";
     const base = mind.core || "no standalone thought yet";
-    return `${name}: ${base}${relationNote}${wantNote}`;
+    return `${name}: ${base}${shiftNote}${feelingNote}${relationNote}${wantNote}`;
   });
 
+  // this framing line is what turns the summary from a private log into
+  // an actual writing cue — it's what lets a hidden feeling quietly
+  // color a character's body language in the visible story, without
+  // ever stating the feeling outright
+  // this block is pure background knowledge — the actual "let these
+  // color actions" instruction now lives in frontMemory instead, since
+  // that sits right at the end of context, next to what the AI is about
+  // to write, rather than competing for attention way at the beginning
+  const header = `${CORE_MEMORY_MARKER} (private — not known to other characters)`;
+
   const existing = (state.memory.context || "").split(CORE_MEMORY_MARKER)[0].replace(/\s+$/, "");
-  let block = `${CORE_MEMORY_MARKER}\n${lines.join("\n")}`;
+  let block = `${header}\n${lines.join("\n")}`;
   // the Memory field has a real (if not precisely documented) size limit —
   // trim entries off the end rather than risk overflowing it silently
   while (block.length > MAX_MEMORY_CONTEXT_LENGTH && lines.length > 1) {
     lines.pop();
-    block = `${CORE_MEMORY_MARKER}\n${lines.join("\n")}`;
+    block = `${header}\n${lines.join("\n")}`;
   }
 
   state.memory.context = lines.length > 0
