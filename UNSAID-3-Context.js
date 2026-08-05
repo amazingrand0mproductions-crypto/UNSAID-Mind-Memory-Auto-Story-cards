@@ -42,7 +42,7 @@ const modifier = (text) => {
     }
 
     if (forcedPeek && forcedPeekCore) {
-      const instruction = buildCoreCheckInstruction(forcedPeek, state.unsaid.minds[forcedPeek], cfg.tensionThreshold);
+      const instruction = buildCoreCheckInstruction(forcedPeek, state.unsaid.minds[forcedPeek]);
       const fitted = fitInstructionToBudget(text, instruction);
       if (fitted) {
         state.unsaid.pending = forcedPeek;
@@ -50,7 +50,7 @@ const modifier = (text) => {
         return { text: text + fitted };
       }
     } else if (forcedPeek) {
-      const fitted = buildAndFitThoughtInstruction(forcedPeek, active, text, cfg.allowCoreShift, cfg.tensionThreshold);
+      const fitted = buildAndFitThoughtInstruction(forcedPeek, active, text, cfg.allowCoreShift);
       if (fitted) {
         state.unsaid.pending = forcedPeek;
         state.unsaid.codex.pendingName = null;
@@ -92,11 +92,11 @@ const modifier = (text) => {
       // off specifically for Do/Say, leave Continue/Story untouched
       const actionType = getLastActionType();
       const isPlayerAction = actionType === "do" || actionType === "say";
-      const effectiveChance = (cfg.reduceDuringActions && isPlayerAction) ? cfg.chance * 0.5 : cfg.chance;
+      const effectiveChance = (REDUCE_DURING_ACTIONS && isPlayerAction) ? cfg.chance * 0.5 : cfg.chance;
 
       if (eligible.length > 0 && Math.random() < effectiveChance) {
         const chosen = pickBySilence(eligible, state.unsaid.turn);
-        const fitted = buildAndFitThoughtInstruction(chosen, active, text, cfg.allowCoreShift, cfg.tensionThreshold);
+        const fitted = buildAndFitThoughtInstruction(chosen, active, text, cfg.allowCoreShift);
         if (fitted) {
           state.unsaid.pending = chosen;
           return { text: text + fitted };

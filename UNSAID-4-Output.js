@@ -62,7 +62,7 @@ const modifier = (text) => {
           }
           // if this character already had tracked feelings before their
           // card existed, show them on the card right away
-          syncMindToCard(name, cfg.compactCardNotes, cfg.showCoreStability, cfg.allowCoreShift, cfg.tensionThreshold);
+          syncMindToCard(name, cfg.allowCoreShift);
         }
       }
     }
@@ -141,6 +141,10 @@ const modifier = (text) => {
         if (wantSentence) mind.want = wantSentence;
         mind.lastThoughtText = thought;
         mind.lastTurn = state.unsaid.turn;
+        // counts every reveal, automatic or /peek — no command required,
+        // this is what naturally opens up eligibility for a core-shift
+        // once a character has shown a little more of themselves
+        mind.revealCount = (mind.revealCount || 0) + 1;
         if (!mind.feelingHistory) mind.feelingHistory = [];
         pushCapped(mind.feelingHistory, feeling, FEELING_HISTORY_LIMIT);
 
@@ -154,14 +158,14 @@ const modifier = (text) => {
         let tensionJustCrossed = false;
         if (!justShifted) {
           if (typeof mind.tensionLevel !== "number") mind.tensionLevel = 0;
-          const wasBelowThreshold = mind.tensionLevel < cfg.tensionThreshold;
-          const tensionCap = cfg.tensionThreshold * DRASTIC_TENSION_MULTIPLIER;
+          const wasBelowThreshold = mind.tensionLevel < TENSION_THRESHOLD;
+          const tensionCap = TENSION_THRESHOLD * DRASTIC_TENSION_MULTIPLIER;
           if (previousFeeling && previousFeeling !== feeling) {
             mind.tensionLevel = Math.min(tensionCap, mind.tensionLevel + 1);
           } else if (previousFeeling === feeling) {
             mind.tensionLevel = Math.max(0, mind.tensionLevel - 1);
           }
-          tensionJustCrossed = cfg.allowCoreShift && wasBelowThreshold && mind.tensionLevel >= cfg.tensionThreshold;
+          tensionJustCrossed = cfg.allowCoreShift && wasBelowThreshold && mind.tensionLevel >= TENSION_THRESHOLD;
         }
 
         if (about) {
@@ -169,7 +173,7 @@ const modifier = (text) => {
         }
         // keep the character's own card notes showing their current state —
         // visible on the card, but never sent to the AI as context
-        syncMindToCard(name, cfg.compactCardNotes, cfg.showCoreStability, cfg.allowCoreShift, cfg.tensionThreshold);
+        syncMindToCard(name, cfg.allowCoreShift);
 
         if (isCoreShift && cfg.allowCoreShift) {
           state.message = `🌗 ${name} has been fundamentally changed — check their Story Card.`;
