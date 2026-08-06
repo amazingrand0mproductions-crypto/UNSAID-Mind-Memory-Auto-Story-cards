@@ -1,94 +1,80 @@
 // ===== UNSAID — LIBRARY =====
-// Two features sharing one small script:
+// A small script, two features:
 //
-// The script's activity is meant to be obvious from what it actually
-// leaves behind, not from anything it announces — a character's card
-// carries their real tracked state: a feeling-history trail, their
-// literal last private thought, a running count of how many private
-// moments they've had, current relationships, and any core-truth
-// shift. That's the visible evidence UNSAID is doing something, not
-// a status line saying so.
+// 1. PRIVATE THOUGHTS
+//    Occasionally reveals what a character is really feeling and
+//    thinking but not saying: one sentence on how they feel, one on
+//    what they secretly want. By default this never appears in the
+//    story — it's written straight to the character's own Story Card
+//    notes, so learning what someone's really thinking means looking
+//    them up, not having it narrated at you (a config toggle restores
+//    the old inline-in-story behavior).
 //
-// The config card sticks to the settings worth actually tuning —
-// on/off switches, chance, cooldown, thresholds — and leaves several
-// finer knobs (retry counts, secondary cooldowns, card layout, tension
-// tuning) as sensible fixed behavior instead of more things to configure.
+//    Feeling, want, and a short rolling history of each evolve
+//    independently. A "core truth" — the character's first standalone
+//    thought, specifically prompted to be something real and
+//    significant rather than a passing reaction — anchors who they
+//    are. By default it can shift after something genuinely major (the
+//    old one is kept, never erased); it can be turned permanent
+//    instead via config. A shift is never a coin flip on an ordinary
+//    reveal: a character's feeling landing somewhere genuinely new
+//    several times running, without settling, builds tracked tension,
+//    shown on their card once it crosses a threshold. Even then, an
+//    ordinary shift is only offered to the AI once the character has
+//    shown a little more of themselves beyond their founding thought —
+//    automatic, through ordinary reveals, no command required. Tension
+//    that keeps climbing well past the threshold, unresolved,
+//    eventually bypasses that requirement too. A steady feeling eases
+//    tension back off. "/peek <name> core" is an optional direct
+//    check that always works and counts as one of those private
+//    moments, but nothing here ever requires it.
 //
-// 1. Private thoughts — occasionally reveals what a character is
-//    really feeling and thinking but not saying out loud: one
-//    sentence on how they feel right now, one on what they secretly
-//    want. By default, a reveal never appears in the story itself —
-//    it's written straight to that character's own Story Card notes,
-//    so learning what someone's really thinking means looking them
-//    up, not having it narrated at you (configurable back to the old
-//    inline behavior if you prefer it). Feeling, want, and a short
-//    rolling history of each evolve independently, alongside a "core
-//    truth" — their first standalone thought, specifically prompted
-//    to be something real and significant rather than a passing
-//    reaction, since it becomes permanent — and how they feel about
-//    up to six specific other people — with a short history per
-//    relationship too, so a reaction can reference how things have
-//    shifted, not just where they stand right now. A scene with
-//    someone they already have history with pulls from that instead
-//    of a random new reaction, and each reveal is nudged to avoid
-//    repeating a character's own last wording. Type "/peek <name>"
-//    as an action to force an immediate reveal on demand. A live
-//    style hint — "let hidden feelings color actions without stating
-//    them" — rides in frontMemory, the part of context closest to
-//    the point of generation, separate from the factual summary in
-//    Memory. A reveal is also less likely to fire during the
-//    player's own Do/Say actions specifically, so it doesn't compete
-//    for attention right when they've taken a deliberate action.
-//    Everything tracked about a character is written to their own
-//    card's notes in a plain, clearly labeled layout by default —
-//    meant to be read at a glance, not parsed — including how long
-//    their current core truth has held, with a denser one-line style
-//    available too. A core truth can shift after something genuinely
-//    major by default — the old one kept on file rather than erased —
-//    though it can be turned permanent instead if you'd rather. It's
-//    never a coin flip on every reveal:
-//    a character's feeling landing somewhere genuinely new, several
-//    times in a row without settling, builds real tracked tension —
-//    shown on their card once it crosses a threshold you set. Even
-//    at that threshold, an ordinary shift is only offered to the AI
-//    once the character has shown a little more of themselves beyond
-//    their founding thought — this happens on its own, automatically,
-//    through ordinary reveals, with no command ever required. If
-//    tension keeps climbing well past that, unresolved, it eventually
-//    bypasses that requirement entirely: something can matter enough
-//    to happen regardless of how much has come to light yet. A
-//    steady feeling eases tension back off. "/peek <name> core"
-//    remains available as an optional direct check at any time — it
-//    always works, and naturally counts as one of those private
-//    moments too — but nothing here ever requires it.
+//    Up to six specific relationships are tracked per character, each
+//    with its own short history, so a reaction can reference how
+//    things have shifted, not just where they stand now — a scene
+//    with someone they already have history with pulls from that
+//    instead of a random new reaction. Every reveal is nudged to avoid
+//    repeating a character's own last wording. "/peek <name>" as an
+//    action forces an immediate reveal on demand, and is less likely
+//    to fire on its own during the player's own Do/Say actions
+//    specifically, so it doesn't compete for attention right when
+//    they've taken a deliberate action. A live style hint — "let
+//    hidden feelings color actions without stating them" — rides in
+//    frontMemory, the part of context closest to the point of
+//    generation, separate from the factual summary kept in Memory.
 //
-// 2. Codex — tracks how many times each new name is mentioned, and
-//    only writes a Story Card once it clears a configurable threshold
-//    (so background one-off names don't get cards). Recognizes when a
+// 2. CODEX
+//    Tracks how many times each new name is mentioned and only writes
+//    a Story Card once it clears a configurable threshold, so
+//    background one-off names don't get cards. Recognizes when a
 //    shorter and longer version of the same name refer to one entity
 //    ("Marcus" / "Marcus Cole") instead of doubling up, and never
-//    cards the player's own character — manually named, or, in
+//    cards the player's own character — named manually, or, in
 //    Multiplayer, every character the platform already knows about.
 //    Builds the right template for a character, location, item, or
-//    faction, and keeps a separate tracking card per type. Delete a
-//    card to have Codex redo it. New characters join the
+//    faction, and keeps a separate tracking card per type. When more
+//    than one name qualifies, it always picks whichever is genuinely
+//    mentioned most, not just whichever comes up first — a stray
+//    false positive that slips past the name filters can't camp in
+//    front of a real, frequently-mentioned name and block it. Delete
+//    a card to have Codex redo it. New characters join the
 //    private-thoughts cast automatically.
 //
 // A short, capped summary of each tracked character's core truth,
-// want, and top relationship also rides in the adventure's always-on
-// Memory — the one part of context that survives regardless of how
-// long it's been since a character was last mentioned, so something
-// established at turn 1 can still matter at turn 1000.
+// want, and top relationship rides in the adventure's always-on
+// Memory too — the one part of context that survives regardless of
+// how long it's been since a character was last mentioned, so
+// something established at turn 1 can still matter at turn 1000.
 //
-// Context-budget aware throughout, with a small safety margin built
-// in, and works the same whether or not the platform's own context
+// Context-budget aware throughout, with a small safety margin, and
+// works the same whether or not the platform's own context
 // optimization is switched on: every injected instruction is checked
-// against the budget before it's sent, shrinking or skipping itself
-// rather than risk crowding out the story. Story Cards are looked up
-// by their keys rather than list position, the config card self-heals
-// its settings if a line gets edited or reordered, and relationships,
-// mention tracking, and memory entries all stay capped instead of
-// growing without bound over a long story.
+// against the budget first, shrinking or skipping itself rather than
+// crowd out the story. Story Cards are looked up by their keys rather
+// than list position, the config card self-heals its settings if a
+// line gets edited or reordered, and relationships, mention tracking,
+// and memory entries all stay capped instead of growing without
+// bound over a long story.
 
 const UNSAID_DEFAULTS = {
   enabled: true,
@@ -112,17 +98,27 @@ const UNSAID_DEFAULTS = {
 const TENSION_THRESHOLD = 3;      // consecutive different feelings before a core-shift feels earned
 const REDUCE_DURING_ACTIONS = true; // less likely to interrupt the player's own Do/Say actions
 
+// -- context & field budgets --
 const CONTEXT_SAFETY_MARGIN = 20; // leave a little headroom below the platform's stated limit
-const FEELING_HISTORY_LIMIT = 3;   // how many recent feelings to remember per character
-const RELATION_HISTORY_LIMIT = 2;   // how many recent feelings to remember per relationship
 const MAX_MEMORY_CONTEXT_LENGTH = 700; // keeps our block well under the ~1000-1500 char limits reported for the Memory field
 const MAX_CARD_ENTRY_LENGTH = 1800;     // guards against an overlong AI-generated card entry
-const CORE_MEMORY_MARKER = "[UNSAID — core truths]";
+
+// -- how much history/state each character keeps --
+const FEELING_HISTORY_LIMIT = 3;   // how many recent feelings to remember per character
+const RELATION_HISTORY_LIMIT = 2;   // how many recent feelings to remember per relationship
+const MAX_RELATIONS_PER_CHARACTER = 6; // caps how many other characters' feelings each mind tracks
 const CORE_MEMORY_MAX_ENTRIES = 8;  // caps how many characters' core truths ride in always-on memory
+const MENTION_TRACKING_CAP = 150; // caps how many never-carded names stay tracked at once
+
+// -- core-truth shift mechanics --
 const DRASTIC_TENSION_MULTIPLIER = 2; // tension can climb this many × the normal threshold when unresolved
 const REVEALS_BEFORE_SHIFT_ELIGIBLE = 2; // reveals needed (founding one + at least one more) before an ordinary shift can happen — earned through normal play, no command required
-const MAX_RELATIONS_PER_CHARACTER = 6; // caps how many other characters' feelings each mind tracks
-const MENTION_TRACKING_CAP = 150; // caps how many never-carded names stay tracked at once
+
+// -- identity markers used to find/parse the script's own Story Cards --
+const CORE_MEMORY_MARKER = "[UNSAID — core truths]";
+const MIND_NOTES_MARKER = "💭 Inner Life — private, not visible to other characters";
+const CAST_LIST_MARKER = "===";
+const CODEX_MAX_ATTEMPTS = 3; // give up on a name after this many failed tries
 
 const CODEX_STOPWORDS = new Set([
   "I", "The", "A", "An", "You", "He", "She", "They", "It", "We", "But",
@@ -175,14 +171,12 @@ const CARD_TEMPLATES = {
   faction: FACTION_CARD_FIELDS
 };
 
-const MIND_NOTES_MARKER = "💭 Inner Life — private, not visible to other characters";
-const CAST_LIST_MARKER = "===";
-const CODEX_MAX_ATTEMPTS = 3; // give up on a name after this many failed tries
-
 function initUnsaid() {
   if (!state.unsaid) {
     state.unsaid = {
-      // Name: { core, feeling, feelingHistory, relations: { Other: "feeling" }, lastTurn }
+      // keyed by character name — see createMind() below for the full,
+      // current shape of each entry rather than duplicating it here
+      // where it's guaranteed to drift out of date again
       minds: {},
       turn: 0,
       pending: null,
