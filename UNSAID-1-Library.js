@@ -43,10 +43,10 @@
 //    card's notes in a plain, clearly labeled layout by default —
 //    meant to be read at a glance, not parsed — including how long
 //    their current core truth has held, with a denser one-line style
-//    available too. A core truth is permanent by default — a stable
-//    anchor — but can optionally be allowed to shift after something
-//    genuinely major, with the old one kept on file rather than
-//    erased. When that's on, it's not a coin flip on every reveal:
+//    available too. A core truth can shift after something genuinely
+//    major by default — the old one kept on file rather than erased —
+//    though it can be turned permanent instead if you'd rather. It's
+//    never a coin flip on every reveal:
 //    a character's feeling landing somewhere genuinely new, several
 //    times in a row without settling, builds real tracked tension —
 //    shown on their card once it crosses a threshold you set. Even
@@ -96,7 +96,7 @@ const UNSAID_DEFAULTS = {
   memorySyncEnabled: true,
   showThoughtsInStory: false, // when false, reveals go to the character's card, not the narrative
   subtleHints: true,           // let hidden feelings quietly color visible actions/body language
-  allowCoreShift: false,        // whether a major event can ever rewrite a character's core truth
+  allowCoreShift: true,        // whether a major event can ever rewrite a character's core truth
   chance: 0.3,        // chance per turn a thought fires, when someone qualifies
   cooldown: 3,          // turns a character must wait before thinking again
   mentionThreshold: 3,   // a name needs MORE than this many mentions before Codex cards it
@@ -138,7 +138,23 @@ const CODEX_STOPWORDS = new Set([
   "Some", "Any", "All", "Each", "Every", "Nothing", "Something", "Anything",
   "Turn", "Chapter", "Part", "Scene", "Day", "Night", "Morning",
   "Evening", "Afternoon", "Time", "Silence", "Darkness", "Light",
-  "Fate", "Death", "Life", "Space", "Everything"
+  "Fate", "Death", "Life", "Space", "Everything",
+  // common short function words — the class of bug that keeps slipping
+  // through one word at a time (e.g. "Not") gets a proper sweep here
+  // instead of another single addition
+  "Not", "Nor", "Only", "Too", "Off", "Out", "Up", "Down", "Away",
+  "Above", "Below", "Under", "Over", "Between", "Among", "Within",
+  "Without", "Behind", "Beside", "Beyond", "Around", "About", "Against",
+  "Toward", "Towards", "Upon", "Onto", "Into", "Along", "Across",
+  "Through", "Throughout", "During", "Both", "Either", "Neither",
+  "Most", "More", "Less", "Much", "Many", "Few", "Little", "Own",
+  "Such", "Same", "Other", "Another", "Next", "Last", "First",
+  "Second", "Third", "Twice", "Whether", "Although", "Though",
+  "Because", "Unless", "Until", "Since", "While", "Where", "Whatever",
+  "Whoever", "Whenever", "Wherever", "Whichever", "Almost", "Enough",
+  "Rather", "Quite", "Somehow", "Somewhat", "Anyway", "Anywhere",
+  "Nowhere", "Somewhere", "Nobody", "Somebody", "Anybody", "Everybody",
+  "Nevertheless", "Nonetheless", "Otherwise", "Therefore", "Thus"
 ]);
 
 const CODEX_LOCATION_HINTS = /\b(city|state|street|avenue|canyon|terminal|park|building|tower|island|country|nation|kingdom|realm|district|region|planet|world|base|facility|academy|university|bridge|river|mountain|forest|desert|battleground|warzone|hall|tavern|inn|castle|fortress|temple)\b/i;
@@ -229,7 +245,7 @@ function ensureConfigCard() {
       "> Show private thoughts in the story text: false\n" +
       "> Let hidden feelings subtly color actions: true\n" +
       "-- Core Truth --\n" +
-      "> Allow major events to rewrite a core truth: false\n" +
+      "> Allow major events to rewrite a core truth: true\n" +
       "-- Codex --\n" +
       "> Mentions needed before Codex creates a card: 3\n" +
       "> Minimum turns between Codex cards: 5\n" +
@@ -247,7 +263,7 @@ function ensureConfigCard() {
       "- Turns before the same character can think again: a cooldown, in turns, before that same character is eligible for another thought — keeps one character from dominating.\n" +
       "- Show private thoughts in the story text: when false (default), a reveal never appears in your story — it's written straight to that character's own Story Card instead, so you look them up rather than having their private thoughts narrated at you. Set to true for the old behavior: an italicized line shown right in the story.\n" +
       "- Let hidden feelings subtly color actions: when true (default), a character's hidden feeling is allowed to quietly show through in their body language and tone in the actual story — a tight smile, a held breath — without ever stating the feeling outright or giving away their private thought. Turn off for characters who should read as unreadable.\n" +
-      "- Allow major events to rewrite a core truth: a character's core truth is normally permanent — set once, from their first real thought, and never touched again, so it stays a stable anchor, shown right on their card along with how long it's held. Turn this on to let a genuinely major story event replace it instead, earned naturally through ordinary play (no commands needed); their old core truth is kept on file rather than erased.\n" +
+      "- Allow major events to rewrite a core truth: on by default. A genuinely major story event can replace a character's core truth, earned naturally through ordinary play (no commands needed) — their old core truth is kept on file rather than erased, and how long the current one has held is shown right on their card. Turn off if you want core truths to stay permanent instead.\n" +
       "- Mentions needed before Codex creates a card: how many times a new name must appear before Codex writes a card for it, so background one-off names don't get cards of their own.\n" +
       "- Minimum turns between Codex cards: how many turns must pass between one Codex card and the next, regardless of how many names qualify — keeps Codex from taking over several turns in a row.\n" +
       "- Codex retries before giving up on a name: how many times Codex will try to get a properly formatted card out of the AI before giving up on that name for good. Raise this if cards are failing to complete.\n" +
@@ -482,21 +498,31 @@ function excludedNames(cfg) {
   return names;
 }
 
-// picks a name that has cleared the mention threshold, doesn't already
-// have a Story Card (or a close match to one), and hasn't exhausted its
-// retries. Deleting an existing card makes its name eligible again.
+// picks the MOST-mentioned name that's cleared the threshold, doesn't
+// already have a Story Card (or a close match to one), and hasn't
+// exhausted its retries. Deleting an existing card makes its name
+// eligible again. Prioritizing by mention count (not just whichever
+// name happens to be first in iteration order) matters: a stray
+// false-positive that slips past the stopword list can otherwise sit
+// at the front and burn through its retries before a genuinely
+// significant, frequently-mentioned name ever gets a turn.
 function findCodexCandidate(threshold, excludeNames, maxAttempts) {
   const exclude = (excludeNames || []).map(n => n.toLowerCase());
   const cap = typeof maxAttempts === "number" ? maxAttempts : CODEX_MAX_ATTEMPTS;
   const counts = state.unsaid.codex.mentionCounts;
+  let best = null;
+  let bestCount = -1;
   for (const name in counts) {
     if (counts[name] <= threshold) continue;
     if (exclude.includes(name.toLowerCase())) continue;
     if (storyCards.some(c => isSameCardEntity(c.title, name))) continue;
     if ((state.unsaid.codex.attempts[name] || 0) >= cap) continue;
-    return name;
+    if (counts[name] > bestCount) {
+      best = name;
+      bestCount = counts[name];
+    }
   }
-  return null;
+  return best;
 }
 
 // builds the hidden-profile instruction for whichever template fits
