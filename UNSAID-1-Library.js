@@ -56,9 +56,14 @@
 //    than one name qualifies, it always picks whichever is genuinely
 //    mentioned most, not just whichever comes up first — a stray
 //    false positive that slips past the name filters can't camp in
-//    front of a real, frequently-mentioned name and block it. Delete
-//    a card to have Codex redo it. New characters join the
-//    private-thoughts cast automatically.
+//    front of a real, frequently-mentioned name and block it. A bare
+//    title ("Emperor," "General") is never specific enough to be its
+//    own subject, but the same word leading an actual name ("Emperor
+//    Kyle Walker") is completely normal and unaffected. Delete a card
+//    to have Codex redo it. New characters join the private-thoughts
+//    cast automatically — and so does any character card that already
+//    existed before UNSAID was ever installed, adopted in the moment
+//    it's first noticed, so a hand-made cast works immediately.
 //
 // A short, capped summary of each tracked character's core truth,
 // want, and top relationship rides in the adventure's always-on
@@ -92,10 +97,8 @@ const UNSAID_DEFAULTS = {
   playerName: ""             // if set, Codex will never write a card for this name
 };
 
-// settled on sensible fixed values rather than exposing every knob —
-// fewer settings to tune, same behavior underneath (Codex's own timing
-// settings are configurable again, further down, per request)
-const TENSION_THRESHOLD = 3;      // consecutive different feelings before a core-shift feels earned
+// -- fixed values, not exposed as settings — Codex's own timing is
+// configurable further down, per explicit request; these two aren't --
 const REDUCE_DURING_ACTIONS = true; // less likely to interrupt the player's own Do/Say actions
 
 // -- context & field budgets --
@@ -111,6 +114,7 @@ const CORE_MEMORY_MAX_ENTRIES = 8;  // caps how many characters' core truths rid
 const MENTION_TRACKING_CAP = 150; // caps how many never-carded names stay tracked at once
 
 // -- core-truth shift mechanics --
+const TENSION_THRESHOLD = 3;      // consecutive different feelings before a core-shift feels earned
 const DRASTIC_TENSION_MULTIPLIER = 2; // tension can climb this many × the normal threshold when unresolved
 const REVEALS_BEFORE_SHIFT_ELIGIBLE = 2; // reveals needed (founding one + at least one more) before an ordinary shift can happen — earned through normal play, no command required
 
@@ -120,6 +124,11 @@ const MIND_NOTES_MARKER = "💭 Inner Life — private, not visible to other cha
 const CAST_LIST_MARKER = "===";
 const CODEX_MAX_ATTEMPTS = 3; // give up on a name after this many failed tries
 
+// words that should never START a candidate name — pronouns,
+// conjunctions, common sentence-openers, and the like. Checked against
+// only the first word, but a match rejects the whole candidate, multi-
+// word or not (unlike CODEX_TITLE_WORDS below, which only rules out a
+// title standing completely alone).
 const CODEX_STOPWORDS = new Set([
   "I", "The", "A", "An", "You", "He", "She", "They", "It", "We", "But",
   "And", "So", "Then", "If", "When", "As", "At", "In", "On", "With",
@@ -158,6 +167,23 @@ const CODEX_LOCATION_HINTS = /\b(city|state|street|avenue|canyon|terminal|park|b
 const CODEX_FACTION_HINTS = /\b(order|guild|alliance|empire|faction|clan|brotherhood|council|syndicate|coalition|army|legion|cult|society|corporation|company|initiative|division|agency|federation|dynasty|tribe)\b/i;
 
 const CODEX_ITEM_HINTS = /\b(sword|blade|gun|rifle|pistol|staff|wand|amulet|ring|armou?r|shield|artifact|device|weapon|tool|key|book|tome|potion|elixir|gem|crystal|relic|suit|mask|cloak|helmet|gauntlet|hammer|axe|bow|orb|blaster|scroll|spear|dagger|lance|trident|chalice|sigil|banner)\b/i;
+
+// titles are a different problem than stopwords: "Emperor" on its own
+// isn't a specific enough subject for a card, but "Emperor Kyle Walker"
+// (title + an actual name) is completely legitimate — so unlike
+// CODEX_STOPWORDS, this only rules out the word appearing completely
+// alone, never a multi-word phrase it happens to lead
+const CODEX_TITLE_WORDS = new Set([
+  "Emperor", "Empress", "King", "Queen", "Prince", "Princess", "Duke",
+  "Duchess", "Lord", "Lady", "Sir", "Dame", "Baron", "Baroness", "Count",
+  "Countess", "President", "General", "Admiral", "Captain", "Colonel",
+  "Major", "Sergeant", "Lieutenant", "Commander", "Chief", "Director",
+  "Minister", "Governor", "Senator", "Ambassador", "Doctor", "Professor",
+  "Master", "Mistress", "Reverend", "Bishop", "Cardinal", "Judge",
+  "Justice", "Mayor", "Chancellor", "Agent", "Officer", "Detective",
+  "Sheriff", "Marshal", "Warden", "Overlord", "Warlord", "Elder",
+  "Guardian", "Knight", "Priest", "Priestess"
+]);
 
 const CHARACTER_CARD_FIELDS = ["Name", "Race", "Strength Level", "Background", "Personality", "Appearance", "Abilities", "Weaknesses", "Relationships"];
 const LOCATION_CARD_FIELDS = ["Name", "Location", "Description", "Key Locations", "Historical Events", "Significance"];
@@ -361,6 +387,30 @@ function readUnsaidConfig() {
     .map(line => line.trim().replace(/^[-•*]\s*/, "")) // tolerate bullet/dash lists
     .filter(Boolean);
 
+  // a character card that already exists — hand-made, from another
+  // scenario, or from before this script was installed — should work
+  // with UNSAID immediately, not sit invisible until someone manually
+  // types the name into this list. Anything not already listed gets
+  // adopted in, once, and the addition is written back so it's visible.
+  const knownLower = cfg.cast.map(n => n.toLowerCase());
+  let adopted = false;
+  let adoptedThisPass = 0;
+  storyCards.forEach(c => {
+    if (adoptedThisPass >= 20) return; // defensive cap — an unusually large pre-existing card library shouldn't flood the cast in one pass
+    if (c.type !== "character" || !c.title) return;
+    if (c.title === "UNSAID Config") return;
+    if (knownLower.includes(c.title.toLowerCase())) return;
+    cfg.cast.push(c.title);
+    knownLower.push(c.title.toLowerCase());
+    adopted = true;
+    adoptedThisPass++;
+  });
+  if (adopted) {
+    const alreadyListed = castSection.split("\n").map(l => l.trim());
+    const newlyAdopted = cfg.cast.filter(n => !alreadyListed.includes(n));
+    card.description += "\n" + newlyAdopted.join("\n");
+  }
+
   // self-heal: rewrite the entry in canonical form so typos or reordered
   // lines don't quietly break parsing on future turns, while keeping
   // whatever values were actually readable above. The notes/description
@@ -426,8 +476,13 @@ function trackMentions(text) {
   const matches = text.match(/\b([A-Z][a-zA-Z]*(?:\s+[A-Z][a-zA-Z]*){0,2})\b/g) || [];
   matches.forEach(raw => {
     const name = raw.trim();
-    const firstWord = name.split(" ")[0];
-    if (CODEX_STOPWORDS.has(firstWord)) return;
+    const words = name.split(" ");
+    if (CODEX_STOPWORDS.has(words[0])) return;
+    // a bare title ("Emperor," "General") isn't specific enough to be
+    // its own subject — but the same word leading a longer phrase
+    // ("Emperor Kyle Walker") is a completely normal way to name
+    // someone, so this only blocks the single-word case
+    if (words.length === 1 && CODEX_TITLE_WORDS.has(name)) return;
     state.unsaid.codex.mentionCounts[name] = (state.unsaid.codex.mentionCounts[name] || 0) + 1;
   });
   pruneMentionCounts();
