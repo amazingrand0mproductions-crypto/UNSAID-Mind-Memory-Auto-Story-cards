@@ -101,7 +101,19 @@ const modifier = (text) => {
       // off specifically for Do/Say, leave Continue/Story untouched
       const actionType = getLastActionType();
       const isPlayerAction = actionType === "do" || actionType === "say";
-      const effectiveChance = (REDUCE_DURING_ACTIONS && isPlayerAction) ? cfg.chance * 0.5 : cfg.chance;
+      let effectiveChance = (REDUCE_DURING_ACTIONS && isPlayerAction) ? cfg.chance * 0.5 : cfg.chance;
+
+      // getting a whole cast their first reveal shouldn't be left purely
+      // to chance stacked turn after turn — while anyone active and
+      // eligible has never had one yet, the roll gets a real boost, so
+      // a scene with several existing characters doesn't take dozens of
+      // turns before anyone but the first-picked one has said anything.
+      // Once everyone active has had at least one reveal, this has no
+      // effect and the configured chance applies exactly as set.
+      const anyoneNeverRevealed = eligible.some(name => !state.unsaid.minds[name]);
+      if (anyoneNeverRevealed) {
+        effectiveChance = Math.min(0.9, effectiveChance * 2.5);
+      }
 
       if (eligible.length > 0 && Math.random() < effectiveChance) {
         const chosen = pickBySilence(eligible, state.unsaid.turn);

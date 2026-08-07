@@ -24,7 +24,13 @@
 //    story — it's written straight to the character's own Story Card
 //    notes, so learning what someone's really thinking means looking
 //    them up, not having it narrated at you (a config toggle restores
-//    the old inline-in-story behavior).
+//    the old inline-in-story behavior). The chance of a reveal firing
+//    gets a real, automatic boost while anyone active still hasn't had
+//    a first one yet — a scene with several existing characters gets
+//    the whole cast started within a handful of turns instead of
+//    leaving broad coverage purely to chance stacked turn after turn.
+//    Once everyone active has had at least one reveal, this has no
+//    effect and the configured chance applies exactly as set.
 //
 //    Feeling, want, and a short rolling history of each evolve
 //    independently. A "core truth" — the character's first standalone
