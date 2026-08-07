@@ -1,13 +1,22 @@
-// @cache-compatible
 // ===== UNSAID — CONTEXT =====
-// Without this directive, AI Dungeon's cache-efficient models (and any
-// model running with Optimized Context on) read this hook for
-// information but silently ignore whatever it returns — meaning every
-// instruction below would be built, "sent," and then never actually
-// reach the AI. That mismatch is consistent with the AI seeming stuck
-// or repeating itself: the model would be working from context that
-// never reflected what this script was trying to add.
-initUnsaid();
+// On cache-efficient models, AI Dungeon's own documentation confirms
+// this hook still runs but its returned result is never applied to
+// what the AI actually sees — every instruction built below could be
+// silently discarded with no error. An earlier "@cache-compatible"
+// directive comment lived here on the strength of an unverified
+// community tip; there's no documented basis for it actually doing
+// anything, so it's been removed rather than imply a fix that isn't
+// real. What's here instead: a check that writes a loud, persistent
+// warning card the moment this condition is detected, so the failure
+// is visible and explainable instead of looking like nothing works.
+try {
+  initUnsaid();
+  checkCacheEfficientWarning();
+} catch (e) {
+  // setup and the cache-efficient check both touch Story Cards and
+  // existing state — never let a problem there break the turn before
+  // the modifier even runs
+}
 
 const modifier = (text) => {
   const originalText = text; // clean fallback if anything below throws

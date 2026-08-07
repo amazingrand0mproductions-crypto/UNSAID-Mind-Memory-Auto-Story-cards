@@ -1,5 +1,10 @@
 // ===== UNSAID — OUTPUT =====
-initUnsaid();
+try {
+  initUnsaid();
+} catch (e) {
+  // setup touches Story Cards and existing state — never let a
+  // problem there break the turn before the modifier even runs
+}
 
 const modifier = (text) => {
   const originalText = text; // clean fallback if anything below throws

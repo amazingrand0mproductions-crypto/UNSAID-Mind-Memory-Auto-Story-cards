@@ -1,4 +1,20 @@
 // ===== UNSAID — LIBRARY =====
+//
+// ⚠️ PLATFORM LIMITATION — READ FIRST
+// AI Dungeon's own documentation confirms that on cache-efficient
+// models, the Context hook still runs but its result is never applied
+// to what the AI actually sees. That means private thoughts and
+// Codex's Story Card generation — both of which work by asking the AI
+// to do something via an injected Context instruction — cannot
+// function on those models, through no fault of your config. This
+// script detects that condition automatically (checkCacheEfficientWarning,
+// in Context.js) and writes an unmissable warning Story Card the
+// moment it's noticed, since a silent failure here is worse than a
+// visible limitation. If you install this and nothing happens no
+// matter what you try, check for that card first. The same check
+// updates that card if the condition later clears — after switching
+// models, for instance — rather than leaving a stale warning behind.
+//
 // A small script, two features:
 //
 // 1. PRIVATE THOUGHTS
@@ -50,9 +66,12 @@
 //    shorter and longer version of the same name refer to one entity
 //    ("Marcus" / "Marcus Cole") instead of doubling up, and never
 //    cards the player's own character — named manually, or, in
-//    Multiplayer, every character the platform already knows about.
-//    Builds the right template for a character, location, item, or
-//    faction, and keeps a separate tracking card per type. When more
+//    Multiplayer, every character the platform already knows about —
+//    recognizing them under any title or honorific the story gives
+//    them ("Kyle Walker" excludes "Emperor Kyle Walker" too, not just
+//    an exact match). Builds the right template for a character,
+//    location, item, or faction, and keeps a separate tracking card
+//    per type. When more
 //    than one name qualifies, it always picks whichever is genuinely
 //    mentioned most, not just whichever comes up first — a stray
 //    false positive that slips past the name filters can't camp in
@@ -139,6 +158,9 @@ const CODEX_STOPWORDS = new Set([
   "Indeed", "Certainly", "Clearly", "Obviously", "Surely",
   "Sometimes", "Always", "Never", "Really", "Actually", "Honestly",
   "Wait", "Look", "Listen", "Right", "Alright", "Hey", "Huh", "Hmm", "Ah",
+  "Easy", "Careful", "Steady", "Quiet", "Patience", "Hush", "Stop",
+  "Freeze", "Move", "Run", "Go", "Come", "Stay", "Help", "Please",
+  "Sorry", "Thanks", "Fine", "Sure", "Great", "Good", "Bad", "Nice",
   "Your", "My", "His", "Her", "Its", "Our", "Their", "These", "Those",
   "Some", "Any", "All", "Each", "Every", "Nothing", "Something", "Anything",
   "Turn", "Chapter", "Part", "Scene", "Day", "Night", "Morning",
@@ -162,9 +184,14 @@ const CODEX_STOPWORDS = new Set([
   "Nevertheless", "Nonetheless", "Otherwise", "Therefore", "Thus"
 ]);
 
-const CODEX_LOCATION_HINTS = /\b(city|state|street|avenue|canyon|terminal|park|building|tower|island|country|nation|kingdom|realm|district|region|planet|world|base|facility|academy|university|bridge|river|mountain|forest|desert|battleground|warzone|hall|tavern|inn|castle|fortress|temple)\b/i;
+const CODEX_LOCATION_HINTS = /\b(city|state|street|avenue|canyon|terminal|park|building|tower|island|country|nation|kingdom|realm|district|region|planet|world|base|facility|academy|university|bridge|river|mountain|forest|desert|battleground|warzone|hall|tavern|inn|castle|fortress|temple|level|sector|wing|chamber|vault|bay|deck|outpost|colony|settlement|village|town|hamlet|station|harbor|wharf)\b/i;
+// a few location-suggestive words commonly fuse into one compound word in
+// fantasy/sci-fi naming ("Megatower," not "Mega Tower") — checked as a
+// plain substring, without a word boundary on both sides, since that
+// fusion means the word itself never gets its own boundary to match
+const CODEX_LOCATION_SUFFIX_HINTS = /(tower|keep|hold|spire|haven|hollow|reach|scraper)/i;
 
-const CODEX_FACTION_HINTS = /\b(order|guild|alliance|empire|faction|clan|brotherhood|council|syndicate|coalition|army|legion|cult|society|corporation|company|initiative|division|agency|federation|dynasty|tribe)\b/i;
+const CODEX_FACTION_HINTS = /\b(order|guild|alliance|empire|faction|clan|brotherhood|council|syndicate|coalition|army|legion|cult|society|corporation|company|initiative|division|agency|federation|dynasty|tribe|vanguard|battalion|regiment|squad|cabal|circle|sect|resistance|movement|militia|garrison)\b/i;
 
 const CODEX_ITEM_HINTS = /\b(sword|blade|gun|rifle|pistol|staff|wand|amulet|ring|armou?r|shield|artifact|device|weapon|tool|key|book|tome|potion|elixir|gem|crystal|relic|suit|mask|cloak|helmet|gauntlet|hammer|axe|bow|orb|blaster|scroll|spear|dagger|lance|trident|chalice|sigil|banner)\b/i;
 
@@ -196,6 +223,53 @@ const CARD_TEMPLATES = {
   item: ITEM_CARD_FIELDS,
   faction: FACTION_CARD_FIELDS
 };
+
+// AI Dungeon's own docs are explicit: on cache-efficient models, the
+// Context hook still RUNS, but its result is never applied to what
+// the AI actually sees — meaning every instruction this script injects
+// (thought reveals, Codex card requests) can be silently discarded
+// with no error, no matter how correct the logic driving it is. This
+// makes that failure mode loud and checkable instead of invisible.
+function checkCacheEfficientWarning() {
+  const title = "UNSAID — Important, Read This ⚠️";
+  const card = storyCards.find(c => c.title === title);
+  const isCacheEfficient = typeof info !== "undefined" && info && !!info.useCacheEfficient;
+
+  if (!isCacheEfficient) {
+    // condition cleared, most likely from switching models — update
+    // a card left over from before rather than leave a stale warning
+    // that no longer reflects what's actually happening
+    if (card && card.entry && card.entry.indexOf("no longer detected") === -1) {
+      const resolvedText =
+        "This warning is no longer detected as of your most recent turn " +
+        "— your current model doesn't appear to be running in " +
+        "cache-efficient mode anymore, so UNSAID should be able to work " +
+        "normally. Safe to delete this card.";
+      card.entry = resolvedText;
+      card.description = resolvedText;
+    }
+    return false;
+  }
+
+  const warningText =
+    "Your current model is running in cache-efficient mode. AI Dungeon's " +
+    "own documentation states that on these models, the Context hook " +
+    "still runs but its result is never sent to the AI — meaning " +
+    "UNSAID's private thoughts and auto-generated Story Cards cannot " +
+    "work right now, through no fault of your config. This is a " +
+    "platform limitation, not a bug in the script. To use UNSAID, " +
+    "switch to a model without cache efficiency enabled, or disable " +
+    "cache efficiency for this model if your plan allows it.";
+  if (!card) {
+    addStoryCard("unsaid warning", warningText, "Class", title, warningText);
+  } else if (card.entry !== warningText) {
+    // card exists but was left in the "resolved" state from earlier —
+    // the condition is back, so restore the real warning text
+    card.entry = warningText;
+    card.description = warningText;
+  }
+  return true;
+}
 
 function initUnsaid() {
   if (!state.unsaid) {
@@ -251,10 +325,10 @@ function createOrFindCard(keys, initialEntry, type) {
 function ensureConfigCard() {
   let card = storyCards.find(c => c.title === "UNSAID Config" || c.keys === "unsaid config");
   if (!card) {
-    card = createOrFindCard("unsaid config", " ", "config");
+    card = createOrFindCard("unsaid config", " ", "Class");
     card.title = "UNSAID Config";
     card.keys = "unsaid config";
-    card.type = "config";
+    card.type = "Class";
     card.entry =
       "-- General --\n" +
       "> Enable UNSAID: true\n" +
@@ -445,7 +519,7 @@ function readUnsaidConfig() {
 function stripConfigNoise(text) {
   let cleaned = text;
   storyCards
-    .filter(c => c.type === "config" && c.title && c.title.indexOf("UNSAID") === 0)
+    .filter(c => c.type === "Class" && c.title && c.title.indexOf("UNSAID") === 0)
     .forEach(card => {
       if (card.entry) cleaned = cleaned.split(card.entry).join("");
       if (card.description) cleaned = cleaned.split(card.description).join("");
@@ -506,6 +580,7 @@ function pruneMentionCounts() {
 // since most new proper nouns in a story are people
 function classifyCodexEntry(name, text) {
   if (CODEX_LOCATION_HINTS.test(name)) return "location";
+  if (CODEX_LOCATION_SUFFIX_HINTS.test(name)) return "location";
   if (CODEX_FACTION_HINTS.test(name)) return "faction";
   if (CODEX_ITEM_HINTS.test(name)) return "item";
 
@@ -541,8 +616,19 @@ function isSameCardEntity(cardTitle, candidateName) {
 function excludedNames(cfg) {
   const names = [];
   if (cfg.playerName) names.push(cfg.playerName);
-  if (typeof info !== "undefined" && info && Array.isArray(info.characters)) {
-    info.characters.forEach(c => { if (c && c.name) names.push(c.name); });
+  // sources disagree on the exact field here — info.characters (array
+  // of {name}) vs info.characterNames (array of plain strings) — so
+  // both are checked rather than betting on one
+  if (typeof info !== "undefined" && info) {
+    if (Array.isArray(info.characters)) {
+      info.characters.forEach(c => {
+        if (typeof c === "string") names.push(c);
+        else if (c && c.name) names.push(c.name);
+      });
+    }
+    if (Array.isArray(info.characterNames)) {
+      info.characterNames.forEach(n => { if (typeof n === "string") names.push(n); });
+    }
   }
   return names;
 }
@@ -556,14 +642,19 @@ function excludedNames(cfg) {
 // at the front and burn through its retries before a genuinely
 // significant, frequently-mentioned name ever gets a turn.
 function findCodexCandidate(threshold, excludeNames, maxAttempts) {
-  const exclude = (excludeNames || []).map(n => n.toLowerCase());
+  const exclude = excludeNames || [];
   const cap = typeof maxAttempts === "number" ? maxAttempts : CODEX_MAX_ATTEMPTS;
   const counts = state.unsaid.codex.mentionCounts;
   let best = null;
   let bestCount = -1;
   for (const name in counts) {
     if (counts[name] <= threshold) continue;
-    if (exclude.includes(name.toLowerCase())) continue;
+    // reuses the same word-subset match as duplicate-card detection —
+    // an exact match alone would miss that "Emperor Kyle Walker" is
+    // the same person as an excluded "Kyle Walker", letting the
+    // player's own character keep winning the most-mentioned slot
+    // under every title or honorific the story gives them
+    if (exclude.some(ex => isSameCardEntity(ex, name))) continue;
     if (storyCards.some(c => isSameCardEntity(c.title, name))) continue;
     if ((state.unsaid.codex.attempts[name] || 0) >= cap) continue;
     if (counts[name] > bestCount) {
@@ -602,10 +693,10 @@ function ensureCodexLogCard(type) {
   const keys = title.toLowerCase();
   let card = storyCards.find(c => c.title === title || c.keys === keys);
   if (!card) {
-    card = createOrFindCard(keys, " ", "config");
+    card = createOrFindCard(keys, " ", "Class");
     card.title = title;
     card.keys = keys;
-    card.type = "config";
+    card.type = "Class";
     card.entry = `Every ${type} card Codex has made, with how many times it was mentioned before the card was created. Delete a card from the story to have Codex redo it — this entry can stay.`;
     card.description = "";
   }
