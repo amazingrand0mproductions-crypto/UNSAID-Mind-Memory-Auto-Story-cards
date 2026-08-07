@@ -96,18 +96,43 @@ const modifier = (text) => {
     // --- Private thought reveal ---
     if (state.unsaid.pending) {
       const name = state.unsaid.pending;
-      const pattern = new RegExp(
+      const strictPattern = new RegExp(
         `《${escapeForRegex(name)},\\s*([a-zA-Z]+)(?:,\\s*(about\\s+[^:》]+|core-shift))?:\\s*([^》]*)》`,
         "i"
       );
-      const thoughtMatch = text.match(pattern);
+      let matchedPattern = strictPattern;
+      let thoughtMatch = text.match(strictPattern);
+      let feeling, modifier2, thought, usedFallback = false;
 
       if (thoughtMatch) {
-        const feeling = thoughtMatch[1].trim().toLowerCase();
-        const modifier2 = thoughtMatch[2] ? thoughtMatch[2].trim() : null;
+        feeling = thoughtMatch[1].trim().toLowerCase();
+        modifier2 = thoughtMatch[2] ? thoughtMatch[2].trim() : null;
+        thought = thoughtMatch[3].trim();
+      } else {
+        // Confirmed real failure mode, not a hypothetical: a model can
+        // attempt the reveal but skip the colon format, e.g. writing
+        // "《Name, feeling the phantom warmth of...》" — treating our
+        // template's placeholder word "feeling" as literal prose to
+        // continue rather than replacing it with a short emotion word.
+        // Rather than silently discard a reveal the model clearly did
+        // attempt, loosely capture everything between the name and the
+        // closing bracket instead.
+        const loosePattern = new RegExp(`《${escapeForRegex(name)},\\s*([^》]+)》`, "i");
+        const looseMatch = text.match(loosePattern);
+        if (looseMatch) {
+          matchedPattern = loosePattern;
+          thought = looseMatch[1].trim().replace(/^feeling\s+/i, "");
+          usedFallback = true;
+        }
+      }
+
+      if (thoughtMatch || (usedFallback && thought)) {
+        if (!feeling) {
+          const existingMind = state.unsaid.minds[name];
+          feeling = (existingMind && existingMind.feeling) || "conflicted";
+        }
         const isCoreShift = modifier2 && /^core-shift$/i.test(modifier2);
         const about = modifier2 && !isCoreShift ? modifier2.replace(/^about\s+/i, "").trim() : null;
-        const thought = thoughtMatch[3].trim();
         const { wantSentence } = splitThoughtSentences(thought);
 
         // default: the reveal never appears in the story at all — it's
@@ -115,11 +140,11 @@ const modifier = (text) => {
         // instead of being narrated into the shared story text. Only
         // shown inline if the player has explicitly opted into that.
         if (cfg.showThoughtsInStory) {
-          text = text.replace(pattern, (full) =>
+          text = text.replace(matchedPattern, (full) =>
             full.trim().startsWith("*") ? full : `*${full.trim()}*`
           );
         } else {
-          text = text.replace(pattern, "").replace(/\n{3,}/g, "\n\n").trimEnd();
+          text = text.replace(matchedPattern, "").replace(/\n{3,}/g, "\n\n").trimEnd();
         }
 
         if (!state.unsaid.minds[name]) state.unsaid.minds[name] = createMind();

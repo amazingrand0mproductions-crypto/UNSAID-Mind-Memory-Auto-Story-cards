@@ -19,8 +19,15 @@ const modifier = (text) => {
     // "/peek <name> core" instead asks specifically whether this moment
     // has been significant enough to redefine them (only does anything
     // if core-shift is enabled in config).
-    const peekCoreMatch = text.trim().match(/^\/peek\s+(.+?)\s+core$/i);
-    const peekMatch = peekCoreMatch || text.trim().match(/^\/peek\s+(.+)$/i);
+    //
+    // NOT anchored to the start of the text on purpose: AI Dungeon's own
+    // docs confirm Do mode prepends "You " and Say mode wraps the whole
+    // input as You say, "..." before this hook ever sees it — an
+    // anchored ^/peek match would silently never fire on either of the
+    // two most common action types, only on Story mode, which mostly
+    // passes text through unchanged.
+    const peekCoreMatch = text.match(/\/peek\s+([A-Za-z][\w\s]*?)\s+core\b/i);
+    const peekMatch = peekCoreMatch || text.match(/\/peek\s+([A-Za-z][\w\s]*?)[\s"'.!?]*$/i);
     if (peekMatch) {
       const name = peekMatch[1].trim().slice(0, 60);
       state.unsaid.forcedPeek = name;

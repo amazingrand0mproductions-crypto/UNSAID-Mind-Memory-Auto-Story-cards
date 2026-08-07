@@ -32,6 +32,18 @@
 //    Once everyone active has had at least one reveal, this has no
 //    effect and the configured chance applies exactly as set.
 //
+//    Parsing what the model actually writes has a real fallback, not
+//    just a strict template match: some models attempt a reveal but
+//    don't follow the exact "feeling:" colon format — writing, say,
+//    "《Name, feeling the phantom warmth of...》" by continuing the
+//    template's placeholder word as literal prose instead of replacing
+//    it with a short emotion word. Confirmed against actual captured
+//    output, not hypothetical. Rather than silently discard a reveal
+//    the model clearly attempted, a looser pattern still captures the
+//    full thought when the strict one doesn't match, falling back to
+//    the character's last known feeling (or a neutral default) when a
+//    clean single-word label can't be pulled out.
+//
 //    Feeling, want, and a short rolling history of each evolve
 //    independently. A "core truth" — the character's first standalone
 //    thought, specifically prompted to be something real and
@@ -57,11 +69,16 @@
 //    with someone they already have history with pulls from that
 //    instead of a random new reaction. Every reveal is nudged to avoid
 //    repeating a character's own last wording. "/peek <name>" as an
-//    action forces an immediate reveal on demand, and is less likely
-//    to fire on its own during the player's own Do/Say actions
-//    specifically, so it doesn't compete for attention right when
-//    they've taken a deliberate action. A live style hint — "let
-//    hidden feelings color actions without stating them" — rides in
+//    action forces an immediate reveal on demand. Its detection isn't
+//    anchored to the very start of the text on purpose — AI Dungeon
+//    prepends "You " to Do actions and wraps Say actions as
+//    You say, "..." before this script ever sees them, so an anchored
+//    match would only ever fire on Story-mode input and silently miss
+//    the two most common action types. It's also less likely to fire
+//    on its own during the player's own Do/Say actions specifically,
+//    so it doesn't compete for attention right when they've taken a
+//    deliberate action. A live style hint — "let hidden feelings
+//    color actions without stating them" — rides in
 //    frontMemory, the part of context closest to the point of
 //    generation, separate from the factual summary kept in Memory.
 //
