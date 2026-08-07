@@ -23,10 +23,13 @@ const modifier = (text) => {
     const blockPattern = /【CARD】([\s\S]*?)【\/CARD】/;
     const openTagPattern = /【CARD】/;
     const match = text.match(blockPattern);
+    const expectedName = state.unsaid.codex.pendingName;
+    const expectedType = state.unsaid.codex.pendingType;
+    let codexSucceeded = false;
 
-    if (match && state.unsaid.codex.pendingName) {
-      const name = state.unsaid.codex.pendingName;
-      const type = state.unsaid.codex.pendingType;
+    if (match && expectedName) {
+      const name = expectedName;
+      const type = expectedType;
 
       const fields = {};
       match[1].split("\n").forEach(line => {
@@ -35,6 +38,15 @@ const modifier = (text) => {
       });
 
       if (fields["Name"]) {
+        codexSucceeded = true;
+        // exact match here on purpose, unlike syncMindToCard's lookup:
+        // findCodexCandidate already excludes any name matching an
+        // existing card via isSameCardEntity, so by now "name" normally
+        // has no card at all. This writes to entry — the card's actual
+        // lore — not just notes, so loosening the match here risks
+        // overwriting a real, hand-authored card's content with a
+        // generic AI profile if a partial match ever did occur, which
+        // would be worse than just making a separate new card.
         let card = storyCards.find(c => c.title.toLowerCase() === name.toLowerCase());
         if (!card) {
           card = createOrFindCard(name.toLowerCase(), " ", type);
@@ -84,6 +96,21 @@ const modifier = (text) => {
       text = text.replace(/【CARD】[\s\S]*$/, "").replace(/\n{3,}/g, "\n\n").trimEnd();
     }
 
+    // an attempt that was requested and didn't produce a usable card —
+    // whether the model ignored the instruction entirely, or wrote
+    // something that didn't include a Name field — still counted against
+    // the retry budget the moment it was requested (in Context.js). Once
+    // that budget is used up, Codex silently gives up on this name
+    // forever, with no card and no explanation, unless told otherwise.
+    // Surfacing that here turns an invisible dead end into something
+    // actionable: delete a stray card, or reset Codex tracking to retry.
+    if (expectedName && !codexSucceeded) {
+      const usedAttempts = state.unsaid.codex.attempts[expectedName] || 0;
+      if (usedAttempts >= cfg.codexMaxAttempts) {
+        state.message = `📇 Codex gave up on "${expectedName}" after ${usedAttempts} attempt${usedAttempts === 1 ? "" : "s"} without a usable response. Use "Reset Codex tracking now" in the config card to let it try again.`;
+      }
+    }
+
     state.unsaid.codex.pendingName = null;
     state.unsaid.codex.pendingType = null;
 
@@ -106,6 +133,12 @@ const modifier = (text) => {
 
       if (thoughtMatch) {
         feeling = thoughtMatch[1].trim().toLowerCase();
+        // confirmed from real play: a model can hit the colon format
+        // correctly but still echo the template's placeholder word
+        // itself as the "emotion" ("《Sera, feeling: ...》" — literally
+        // capturing "feeling" as if it were a one-word emotion). Treat
+        // that the same as not having extracted a clean label at all.
+        if (feeling === "feeling" || feeling === "emotion" || feeling === "thought") feeling = null;
         modifier2 = thoughtMatch[2] ? thoughtMatch[2].trim() : null;
         thought = thoughtMatch[3].trim();
       } else {
@@ -123,7 +156,31 @@ const modifier = (text) => {
           matchedPattern = loosePattern;
           thought = looseMatch[1].trim().replace(/^feeling\s+/i, "");
           usedFallback = true;
+        } else {
+          // also confirmed from real play: a reveal can drop the
+          // character's name entirely — "《And for the first time in
+          // fifteen years...》" with no "Name," prefix at all. Neither
+          // pattern above can match that, since both anchor on the name.
+          // We already know who was asked (state.unsaid.pending), so any
+          // 《...》 block present at all, whoever it nominally belongs to,
+          // is treated as theirs rather than discarded.
+          const anyBracketPattern = /《([^》]+)》/;
+          const anyMatch = text.match(anyBracketPattern);
+          if (anyMatch) {
+            matchedPattern = anyBracketPattern;
+            thought = anyMatch[1].trim().replace(/^feeling\s+/i, "");
+            usedFallback = true;
+          }
         }
+      }
+
+      // an opening 《 with no closing 》 means the response got cut off
+      // mid-reveal — confirmed happening in real play. Without this, the
+      // raw, unfinished markup (e.g. "*《Sera, feeling: ...") stays in
+      // the visible story forever, exactly the failure mode already
+      // guarded against for an unclosed 【CARD】 tag.
+      if (!thoughtMatch && !usedFallback && text.indexOf("《") !== -1) {
+        text = text.replace(/《[\s\S]*$/, "").replace(/\n{3,}/g, "\n\n").trimEnd();
       }
 
       if (thoughtMatch || (usedFallback && thought)) {

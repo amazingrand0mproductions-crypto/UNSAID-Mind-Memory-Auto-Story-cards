@@ -42,7 +42,19 @@
 //    the model clearly attempted, a looser pattern still captures the
 //    full thought when the strict one doesn't match, falling back to
 //    the character's last known feeling (or a neutral default) when a
-//    clean single-word label can't be pulled out.
+//    clean single-word label can't be pulled out. Two more confirmed
+//    failure modes, same real-play origin: a reveal can drop the
+//    character's name entirely ("《And for the first time in fifteen
+//    years...》" with no "Name," prefix at all) — recovered by treating
+//    any bracketed content as belonging to whoever was actually asked,
+//    since that's already known. And a reveal can simply never close —
+//    an opening 《 with no matching 》 means the response got cut off,
+//    and without handling that, the raw unfinished markup sits in the
+//    visible story forever. Both guarded against the same way an
+//    unclosed 【CARD】 tag already was. The instruction itself was also
+//    reworded to spell out, explicitly, not to write "feeling" as the
+//    literal emotion — a preventative fix on top of the reactive ones,
+//    not a replacement for them.
 //
 //    Feeling, want, and a short rolling history of each evolve
 //    independently. A "core truth" — the character's first standalone
@@ -105,7 +117,12 @@
 //    to have Codex redo it. New characters join the private-thoughts
 //    cast automatically — and so does any character card that already
 //    existed before UNSAID was ever installed, adopted in the moment
-//    it's first noticed, so a hand-made cast works immediately.
+//    it's first noticed, so a hand-made cast works immediately. A
+//    failed attempt (the model didn't produce a usable card) counts
+//    against a retry budget the same way a successful one does — once
+//    that's used up, Codex gives up on that name for good. Rather than
+//    let that happen silently and invisibly, the last exhausted attempt
+//    says so plainly and points at the config card's reset option.
 //
 // A short, capped summary of each tracked character's core truth,
 // want, and top relationship rides in the adventure's always-on
@@ -134,7 +151,7 @@ const UNSAID_DEFAULTS = {
   cooldown: 3,          // turns a character must wait before thinking again
   mentionThreshold: 3,   // a name needs MORE than this many mentions before Codex cards it
   codexCooldown: 5,       // minimum turns between two Codex triggers, of any name
-  codexMaxAttempts: 3,     // retries on a name before Codex gives up on it
+  codexMaxAttempts: 5,     // retries on a name before Codex gives up on it
   memoryMaxEntries: 8,      // how many characters' core truths ride in always-on memory
   playerName: ""             // if set, Codex will never write a card for this name
 };
@@ -366,7 +383,7 @@ function ensureConfigCard() {
       "-- Codex --\n" +
       "> Mentions needed before Codex creates a card: 3\n" +
       "> Minimum turns between Codex cards: 5\n" +
-      "> Codex retries before giving up on a name: 3\n" +
+      "> Codex retries before giving up on a name: 5\n" +
       "> Reset Codex tracking now: false\n" +
       "> Player character (skip when Codexing): \n" +
       "-- Memory --\n" +
@@ -777,11 +794,22 @@ function recordRelation(name, other, feeling) {
 // already gets an equivalent (and more detailed) picture whenever a
 // thought actually fires, so there's no need to duplicate it into the
 // part of the card that gets sent to the model every time it triggers.
+// Finds the card via the same word-subset match used elsewhere (not an
+// exact title match) — confirmed a real, common case this was missing:
+// a scenario's cards titled with full names ("Sera Walker") while the
+// story, and therefore the AI's reveals, refer to them by a shorter
+// form ("Sera"). An exact match silently found nothing to write to.
 function syncMindToCard(name, allowCoreShift) {
   const mind = state.unsaid.minds[name];
   if (!mind) return;
 
-  const card = storyCards.find(c => c.title.toLowerCase() === name.toLowerCase() && c.type === "character");
+  // exact-match alone missed a very real, common case: a scenario's
+  // pre-made character cards titled with full names ("Sera Walker")
+  // while the story — and therefore the AI's reveals — refers to them
+  // by a shorter form ("Sera"). Reusing the same word-subset match
+  // already relied on elsewhere (Codex dedup, player exclusion) fixes
+  // that the same way, instead of silently finding nothing to write to.
+  const card = storyCards.find(c => c.type === "character" && isSameCardEntity(c.title, name));
   if (!card) return;
 
   const stabilityNote = typeof mind.coreSetTurn === "number" && state.unsaid.turn > mind.coreSetTurn
@@ -902,7 +930,7 @@ function buildCoreCheckInstruction(chosen, mind) {
       ? " Their feelings have been genuinely unsettled for a while now — this may well be the moment."
       : " Their feelings have been fairly steady lately, for what that's worth.")
     : "";
-  return `\n[Consider whether recent events have genuinely, permanently changed how ${chosen} sees themselves — not just a passing mood.${coreNote}${tensionNote} If yes, reveal it as "《${chosen}, feeling, core-shift: new lasting truth.》" (2 italicized sentences). If nothing that significant has happened, don't force it — continue the story normally with no reveal at all.]\n`;
+  return `\n[Consider whether recent events have genuinely, permanently changed how ${chosen} sees themselves — not just a passing mood.${coreNote}${tensionNote} If yes, reveal it as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" (replace [one-word-emotion] with an actual word, not the literal placeholder) (2 italicized sentences). If nothing that significant has happened, don't force it — continue the story normally with no reveal at all.]\n`;
 }
 
 function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift) {
@@ -948,7 +976,7 @@ function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift)
       : (mind && mind.relations && mind.relations[target]
         ? ` Feels ${mind.relations[target]} toward ${target} unless this scene shifts it.`
         : "");
-    instruction = `\n[${chosen}'s unspoken reaction to ${target} — 2 italicized sentences: how they really feel about ${target} right now, and what they secretly want from this moment. ${target} can't perceive it.${coreNote}${relationNote}${historyNote}${wantNote}${varietyNote} Format: "《${chosen}, feeling, about ${target}: thought.》"]\n`;
+    instruction = `\n[${chosen}'s unspoken reaction to ${target} — 2 italicized sentences: how they really feel about ${target} right now, and what they secretly want from this moment. ${target} can't perceive it.${coreNote}${relationNote}${historyNote}${wantNote}${varietyNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally. Format: "《${chosen}, [one-word-emotion], about ${target}: thought.》"]\n`;
   } else if (mind && mind.core) {
     const atThreshold = allowCoreShift && typeof mind.tensionLevel === "number" &&
       mind.tensionLevel >= TENSION_THRESHOLD;
@@ -965,15 +993,15 @@ function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift)
     const shiftEligible = atDrasticTier || (atThreshold && naturallyEligible);
     const shiftNote = shiftEligible
       ? (atDrasticTier && !naturallyEligible
-        ? ` Their feelings have been unraveling for a long time now, unresolved — something this significant would happen regardless. If it's truly earned, you may format this instead as "《${chosen}, feeling, core-shift: new lasting truth.》" to replace their old anchor.`
-        : ` Their feelings have been genuinely shifting for a while now, not settling back — if this moment plays into that and something has truly changed how they see themselves, you may format this instead as "《${chosen}, feeling, core-shift: new lasting truth.》" to replace their old anchor. Only do this if it's really earned.`)
+        ? ` Their feelings have been unraveling for a long time now, unresolved — something this significant would happen regardless. If it's truly earned, you may format this instead as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" to replace their old anchor.`
+        : ` Their feelings have been genuinely shifting for a while now, not settling back — if this moment plays into that and something has truly changed how they see themselves, you may format this instead as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" to replace their old anchor. Only do this if it's really earned.`)
       : "";
-    instruction = `\n[${chosen}'s private thought — 2 italicized sentences: how they really feel right now, and what they secretly want. Consistent with "${mind.core}" and their feeling of ${mind.feeling} unless this scene shifts it.${historyNote}${wantNote}${varietyNote}${shiftNote} Format: "《${chosen}, feeling: thought.》" No one else perceives it.]\n`;
+    instruction = `\n[${chosen}'s private thought — 2 italicized sentences: how they really feel right now, and what they secretly want. Consistent with "${mind.core}" and their feeling of ${mind.feeling} unless this scene shifts it.${historyNote}${wantNote}${varietyNote}${shiftNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally. Format: "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
   } else {
     // this is the moment their very first private thought gets set — and
     // whatever comes out of it becomes their permanent core truth, so it
     // shouldn't read like a passing reaction to whatever's on screen
-    instruction = `\n[This is ${chosen}'s very first private thought — once revealed, it becomes a lasting truth about who they fundamentally are, something real and significant enough to define them going forward, not a fleeting reaction to this moment. 2 italicized sentences: what this deep truth is, and what they secretly want because of it. Format: "《${chosen}, feeling: thought.》" No one else perceives it.]\n`;
+    instruction = `\n[This is ${chosen}'s very first private thought — once revealed, it becomes a lasting truth about who they fundamentally are, something real and significant enough to define them going forward, not a fleeting reaction to this moment. 2 italicized sentences: what this deep truth is, and what they secretly want because of it. Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally. Format: "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
   }
 
   return fitInstructionToBudget(baseText, instruction);
