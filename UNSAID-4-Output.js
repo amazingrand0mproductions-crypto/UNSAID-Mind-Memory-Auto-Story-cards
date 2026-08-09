@@ -188,8 +188,17 @@ const modifier = (text) => {
           const existingMind = state.unsaid.minds[name];
           feeling = (existingMind && existingMind.feeling) || "conflicted";
         }
-        const isCoreShift = modifier2 && /^core-shift$/i.test(modifier2);
-        const about = modifier2 && !isCoreShift ? modifier2.replace(/^about\s+/i, "").trim() : null;
+        let isCoreShift = modifier2 && /^core-shift$/i.test(modifier2);
+        let about = modifier2 && !isCoreShift ? modifier2.replace(/^about\s+/i, "").trim() : null;
+        // modifier2 only ever gets set by the strict path — a core-shift
+        // attempt that also happened to trip the loose or name-omitted
+        // fallback would otherwise silently downgrade to an ordinary
+        // reveal. Checked here too so a malformed-but-genuine attempt
+        // still registers as one.
+        if (!isCoreShift && usedFallback && /^core-shift\s*[:,]?\s*/i.test(thought)) {
+          isCoreShift = true;
+          thought = thought.replace(/^core-shift\s*[:,]?\s*/i, "");
+        }
         const { wantSentence } = splitThoughtSentences(thought);
 
         // default: the reveal never appears in the story at all — it's

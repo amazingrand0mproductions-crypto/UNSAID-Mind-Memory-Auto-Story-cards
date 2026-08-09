@@ -54,7 +54,10 @@
 //    unclosed 【CARD】 tag already was. The instruction itself was also
 //    reworded to spell out, explicitly, not to write "feeling" as the
 //    literal emotion — a preventative fix on top of the reactive ones,
-//    not a replacement for them.
+//    not a replacement for them. A core-shift attempt is recognized
+//    from any of these paths, not just the strict one, so a malformed
+//    response doesn't silently downgrade an earned shift into an
+//    ordinary reveal.
 //
 //    Feeling, want, and a short rolling history of each evolve
 //    independently. A "core truth" — the character's first standalone
