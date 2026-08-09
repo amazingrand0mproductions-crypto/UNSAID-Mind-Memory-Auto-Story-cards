@@ -93,7 +93,7 @@ const modifier = (text) => {
           }
           // if this character already had tracked feelings before their
           // card existed, show them on the card right away
-          syncMindToCard(name, cfg.allowCoreShift);
+          syncMindToCard(name, cfg.allowCoreShift, cfg.jsonNotes);
         }
       }
     });
@@ -294,7 +294,7 @@ const modifier = (text) => {
         }
         // keep the character's own card notes showing their current state —
         // visible on the card, but never sent to the AI as context
-        syncMindToCard(name, cfg.allowCoreShift);
+        syncMindToCard(name, cfg.allowCoreShift, cfg.jsonNotes);
 
         if (isCoreShift && cfg.allowCoreShift) {
           state.message = `🌗 ${name} has been fundamentally changed — check their Story Card.`;
@@ -309,7 +309,7 @@ const modifier = (text) => {
       state.unsaid.pending = null;
     }
 
-    syncCoreMemory(cfg.memoryMaxEntries, cfg.memorySyncEnabled);
+    syncCoreMemory(cfg.memoryMaxEntries, cfg.memorySyncEnabled, cfg.memoryPercent);
     syncFrontMemoryHint(cfg.subtleHints);
 
     return { text };

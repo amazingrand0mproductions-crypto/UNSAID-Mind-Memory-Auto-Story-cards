@@ -114,7 +114,14 @@
 //    budget on something too incomplete to ever get a usable response.
 //    A sentence-initial stopword glued onto an otherwise real name
 //    ("The Sword of Power...") has the stopword stripped rather than
-//    losing the whole mention. Recognizes when a shorter and longer
+//    losing the whole mention. A title abbreviation with its period
+//    ("Dr. Moreau") is bridged into the name it precedes the same
+//    way — confirmed via direct testing that without this, "Dr" and
+//    "Moreau" tracked as two entirely disconnected candidates, each
+//    competing on its own rather than as the one name that matters
+//    (the same fix also prevents the identical abbreviation from
+//    being mistaken for a sentence-ending period when a reveal's want
+//    text is extracted). Recognizes when a shorter and longer
 //    version of the same name refer to one entity ("Marcus" / "Marcus
 //    Cole") instead of doubling up, and never cards the player's own
 //    character — named manually, or, in Multiplayer, every character
@@ -144,12 +151,25 @@
 //    invisibly, the last exhausted attempt says so plainly and points
 //    at the config card's reset option.
 //
-// A short, capped summary of each tracked character's core truth,
-// want, and top relationship can optionally ride in the adventure's
-// always-on Memory too (off by default — see below) — the one part of
-// context that survives regardless of
+// A short summary of each tracked character's core truth, want, and
+// top relationship can optionally ride in the adventure's always-on
+// Memory too (off by default — see below), capped as a percentage of
+// the model's actual available context rather than a flat number, so
+// it scales sensibly whether the model's context is small or large —
+// the one part of context that survives regardless of
 // how long it's been since a character was last mentioned, so
 // something established at turn 1 can still matter at turn 1000.
+// Who counts as "active" for a reveal is judged primarily from the
+// text actually being sent to the AI, sized generously in estimated
+// turns — confirmed reliable in every case tested. AI Dungeon's own
+// history array supplements this (never replaces it): its most recent
+// entry gets folded in too, catching the one real gap the estimate
+// alone can still miss — a single turn genuinely longer than the
+// whole window. Kept as a supplement rather than the primary source
+// on purpose: testing found history's per-turn text can be stale or
+// empty in ways this script can't verify stay synced with what's
+// actually happening, and trusting it alone once produced zero active
+// characters, ever, with nothing indicating why.
 //
 // Context-budget aware throughout, with a small safety margin, and
 // works the same whether or not the platform's own context
@@ -174,6 +194,7 @@ const UNSAID_DEFAULTS = {
   memorySyncEnabled: false, // off by default — private data belongs on the character's own card, not in Plot Essentials
   showThoughtsInStory: false, // when false, reveals go to the character's card, not the narrative
   subtleHints: true,           // let hidden feelings quietly color visible actions/body language
+  jsonNotes: false,        // write character card notes as JSON instead of plain prose
   allowCoreShift: true,        // whether a major event can ever rewrite a character's core truth
   chance: 0.3,        // chance per turn a thought fires, when someone qualifies
   cooldown: 3,          // turns a character must wait before thinking again
@@ -183,12 +204,14 @@ const UNSAID_DEFAULTS = {
   codexCooldown: 5,       // minimum turns between two Codex triggers, of any name
   codexMaxAttempts: 5,     // retries on a name before Codex gives up on it
   memoryMaxEntries: 8,      // how many characters' core truths ride in always-on memory
+  memoryPercent: 10,          // memory summary caps at this % of the model's actual context
   playerName: ""             // if set, Codex will never write a card for this name
 };
 
 // -- context & field budgets --
 const CONTEXT_SAFETY_MARGIN = 20; // leave a little headroom below the platform's stated limit
-const MAX_MEMORY_CONTEXT_LENGTH = 700; // keeps our block well under the ~1000-1500 char limits reported for the Memory field
+const MEMORY_CONTEXT_PERCENT = 0.10; // memory summary caps at this share of the model's actual context, not a flat number
+const MEMORY_CONTEXT_FALLBACK_LENGTH = 700; // used only if info.maxChars isn't available to compute a percentage from
 const MAX_CARD_ENTRY_LENGTH = 1800;     // guards against an overlong AI-generated card entry
 
 // -- how much history/state each character keeps --
@@ -278,6 +301,25 @@ const CODEX_TITLE_WORDS = new Set([
   "Sheriff", "Marshal", "Warden", "Overlord", "Warlord", "Elder",
   "Guardian", "Knight", "Priest", "Priestess"
 ]);
+
+// common abbreviations whose period isn't a real sentence end, and
+// which can also prefix a name as a title ("Dr. Moreau"). Used in two
+// places: splitThoughtSentences below (avoiding a false sentence-split
+// on the period) and trackMentions (bridging the abbreviation into the
+// name it precedes instead of tracking them as two disconnected
+// candidates). Confirmed both are real, reproducible failure modes,
+// not hypothetical — directly relevant here given "Dr. Moreau" is a
+// major, frequently-mentioned character in this story.
+const SENTENCE_ABBREVIATIONS = new Set([
+  "Dr", "Mr", "Mrs", "Ms", "Prof", "St", "Jr", "Sr", "Capt", "Gen",
+  "Col", "Lt", "Sgt", "Rev", "Hon", "Fr", "Rep", "Sen", "Gov", "Adm",
+  "Cmdr", "Maj", "Mt", "vs", "etc"
+]);
+// pre-built once rather than reconstructed on every trackMentions call
+const CODEX_TITLE_ABBREV_REGEX = new RegExp(
+  `\\b(?:(?:${[...SENTENCE_ABBREVIATIONS].filter(w => w.length > 1).join("|")})\\.\\s+)?[A-Z][a-zA-Z]*(?:\\s+of\\s+[A-Z][a-zA-Z]*|\\s+[A-Z][a-zA-Z]*){0,2}\\b`,
+  "g"
+);
 
 const CHARACTER_CARD_FIELDS = ["Name", "Race", "Strength Level", "Background", "Personality", "Appearance", "Abilities", "Weaknesses", "Relationships"];
 const LOCATION_CARD_FIELDS = ["Name", "Location", "Description", "Key Locations", "Historical Events", "Significance"];
@@ -409,6 +451,7 @@ function ensureConfigCard() {
       "> Recent turns counted as \"active\": 3\n" +
       "> Show private thoughts in the story text: false\n" +
       "> Let hidden feelings subtly color actions: true\n" +
+      "> Store card notes as JSON: false\n" +
       "-- Core Truth --\n" +
       "> Allow major events to rewrite a core truth: true\n" +
       "-- Codex --\n" +
@@ -419,7 +462,8 @@ function ensureConfigCard() {
       "> Player character (skip when Codexing): \n" +
       "-- Memory --\n" +
       "> Sync core truths to always-on memory: false\n" +
-      "> Characters remembered in long-term memory: 8";
+      "> Characters remembered in long-term memory: 8\n" +
+      "> Memory summary size (% of context): 10";
     card.description =
       "UNSAID Config — what each setting above does:\n" +
       "- Enable UNSAID: master switch for the whole script (private thoughts and Codex together). False turns everything off.\n" +
@@ -430,6 +474,7 @@ function ensureConfigCard() {
       "- Recent turns counted as \"active\": roughly how many recent turns get scanned for who's currently active and eligible for a reveal, sized generously since a single detailed turn can run to several thousand characters — raise it if characters feel like they drop out of relevance too fast in a slow-paced story, lower it to keep the cast tightly focused on only the very latest turn.\n" +
       "- Show private thoughts in the story text: when false (default), a reveal never appears in your story — it's written straight to that character's own Story Card instead, so you look them up rather than having their private thoughts narrated at you. Set to true for the old behavior: an italicized line shown right in the story.\n" +
       "- Let hidden feelings subtly color actions: when true (default), a character's hidden feeling is allowed to quietly show through in their body language and tone in the actual story — a tight smile, a held breath — without ever stating the feeling outright or giving away their private thought. Turn off for characters who should read as unreadable.\n" +
+      "- Store card notes as JSON: off by default — notes are written as plain, skimmable prose. Turn on to instead write the exact same data as structured JSON, if you specifically want it machine-parseable rather than easy to read at a glance.\n" +
       "- Allow major events to rewrite a core truth: on by default. A genuinely major story event can replace a character's core truth, earned naturally through ordinary play (no commands needed) — their old core truth is kept on file rather than erased, and how long the current one has held is shown right on their card. Turn off if you want core truths to stay permanent instead.\n" +
       "- Mentions needed before Codex creates a card: how many times a new name must appear before Codex writes a card for it, so background one-off names don't get cards of their own.\n" +
       "- Minimum turns between Codex cards: how many turns must pass between one Codex card and the next, regardless of how many names qualify — keeps Codex from taking over several turns in a row.\n" +
@@ -437,7 +482,8 @@ function ensureConfigCard() {
       "- Reset Codex tracking now: set to true and Codex will forget every failed attempt and cooldown timer, then flip this back to false on its own. Use this if cards seem stuck and not being made.\n" +
       "- Player character (skip when Codexing): put your own character's name here if you don't want Codex writing an AI-authored profile for them. Leave blank to let Codex treat them like anyone else. In Multiplayer, everyone's character name is already skipped automatically.\n" +
       "- Sync core truths to always-on memory: off by default. Every reveal already lives on the character's own Story Card notes — private, never sent to the AI, no context cost. Turning this on additionally keeps a short, capped summary in your adventure's Plot Essentials/Memory, which the AI always sees regardless of whether a card is currently triggered — the tradeoff is that summary does cost context and does reach the AI, unlike the card notes. Turn on only if you want something revealed on turn 1 to keep influencing the AI's writing on turn 1000 even for a character who hasn't come up in a while.\n" +
-      "- Characters remembered in long-term memory: how many characters' core truths are allowed to ride in the always-on memory summary at once. Higher keeps more people relevant longer, but uses more of your context budget.\n\n" +
+      "- Characters remembered in long-term memory: how many characters' core truths are allowed to ride in the always-on memory summary at once. Higher keeps more people relevant longer, but uses more of your context budget.\n" +
+      "- Memory summary size (% of context): the always-on summary caps itself at this share of your model's actual available context, not a flat number — so it stays proportional whether you're on a small-context model or a large one. Only matters if the setting above is turned on.\n\n" +
       "Add the names of characters who can have private thoughts below, one per line. Codex adds newly discovered characters here automatically.\n" +
       CAST_LIST_MARKER + "\n" +
       "Marcus\n" +
@@ -464,6 +510,9 @@ function readUnsaidConfig() {
 
   const subtleHintsMatch = card.entry.match(/subtly color actions:\s*(true|false)/i);
   if (subtleHintsMatch) cfg.subtleHints = subtleHintsMatch[1].toLowerCase() === "true";
+
+  const jsonNotesMatch = card.entry.match(/Store card notes as JSON:\s*(true|false)/i);
+  if (jsonNotesMatch) cfg.jsonNotes = jsonNotesMatch[1].toLowerCase() === "true";
 
   const coreShiftMatch = card.entry.match(/rewrite a core truth:\s*(true|false)/i);
   if (coreShiftMatch) cfg.allowCoreShift = coreShiftMatch[1].toLowerCase() === "true";
@@ -526,6 +575,12 @@ function readUnsaidConfig() {
     if (!isNaN(parsedMemCount)) cfg.memoryMaxEntries = Math.max(0, parsedMemCount);
   }
 
+  const memPercentMatch = card.entry.match(/Memory summary size \(% of context\):\s*(\d+)/i);
+  if (memPercentMatch) {
+    const parsedMemPercent = parseInt(memPercentMatch[1], 10);
+    if (!isNaN(parsedMemPercent)) cfg.memoryPercent = Math.min(50, Math.max(1, parsedMemPercent));
+  }
+
   // [ \t]* rather than \s* here on purpose — \s* would happily cross the
   // newline when this value is blank and land on the next line (which,
   // now that settings are grouped under section headers, could be a
@@ -582,6 +637,7 @@ function readUnsaidConfig() {
     `> Recent turns counted as "active": ${cfg.recentTurnsWindow}\n` +
     `> Show private thoughts in the story text: ${cfg.showThoughtsInStory}\n` +
     `> Let hidden feelings subtly color actions: ${cfg.subtleHints}\n` +
+    `> Store card notes as JSON: ${cfg.jsonNotes}\n` +
     "-- Core Truth --\n" +
     `> Allow major events to rewrite a core truth: ${cfg.allowCoreShift}\n` +
     "-- Codex --\n" +
@@ -592,7 +648,8 @@ function readUnsaidConfig() {
     `> Player character (skip when Codexing): ${cfg.playerName}\n` +
     "-- Memory --\n" +
     `> Sync core truths to always-on memory: ${cfg.memorySyncEnabled}\n` +
-    `> Characters remembered in long-term memory: ${cfg.memoryMaxEntries}`;
+    `> Characters remembered in long-term memory: ${cfg.memoryMaxEntries}\n` +
+    `> Memory summary size (% of context): ${cfg.memoryPercent}`;
 
   return cfg;
 }
@@ -647,7 +704,12 @@ function trackMentions(text) {
   // leaving "of Power" completely unmatched. Confirmed by testing that
   // exact sentence directly. "of" alone doesn't share this risk near
   // as often, since it rarely trails a bare sentence-initial word.
-  const matches = text.match(/\b([A-Z][a-zA-Z]*(?:\s+of\s+[A-Z][a-zA-Z]*|\s+[A-Z][a-zA-Z]*){0,2})\b/g) || [];
+  // also bridges a title abbreviation with its period ("Dr.") into the
+  // name it precedes — confirmed via direct testing: without this,
+  // "Dr. Moreau" tracked as two entirely separate, disconnected
+  // candidates ("Dr" and "Moreau"), each competing on its own rather
+  // than as the one name that actually matters.
+  const matches = text.match(CODEX_TITLE_ABBREV_REGEX) || [];
   matches.forEach(raw => {
     let name = raw.trim();
     let words = name.split(" ");
@@ -940,7 +1002,7 @@ function recordRelation(name, other, feeling) {
 // a scenario's cards titled with full names ("Sera Walker") while the
 // story, and therefore the AI's reveals, refer to them by a shorter
 // form ("Sera"). An exact match silently found nothing to write to.
-function syncMindToCard(name, allowCoreShift) {
+function syncMindToCard(name, allowCoreShift, useJson) {
   const mind = state.unsaid.minds[name];
   if (!mind) return;
 
@@ -964,6 +1026,35 @@ function syncMindToCard(name, allowCoreShift) {
       ? "increasingly tested"
       : "increasingly tested — though it'll take one more private moment before a shift is possible")
     : null;
+
+  // opt-in, off by default: plain prose stays the default deliberately
+  // (established preference — meant to be skimmed at a glance, not
+  // parsed), but the same underlying data can be written as JSON
+  // instead for anyone who specifically wants a machine-readable form
+  if (useJson) {
+    const relations = {};
+    if (mind.relationOrder) {
+      mind.relationOrder.forEach(other => {
+        const hist = mind.relationHistory && mind.relationHistory[other];
+        relations[other] = { current: mind.relations[other], history: hist || [mind.relations[other]] };
+      });
+    }
+    const jsonBody = {
+      core: mind.core || null,
+      coreStableSince: stabilityNote ? state.unsaid.turn - mind.coreSetTurn : null,
+      formerlyBelieved: mind.coreHistory && mind.coreHistory.length > 0 ? mind.coreHistory[mind.coreHistory.length - 1] : null,
+      tension: tensionNote,
+      feeling: mind.feeling || null,
+      feelingHistory: mind.feelingHistory || [],
+      lastThought: mind.lastThoughtText || null,
+      want: mind.want || null,
+      relations,
+      revealCount: mind.revealCount || 0
+    };
+    const base = (card.description || "").split(MIND_NOTES_MARKER)[0].replace(/\s+$/, "");
+    card.description = `${base}\n\n${MIND_NOTES_MARKER}\n${JSON.stringify(jsonBody, null, 2)}`.trim();
+    return;
+  }
 
   // plain layout — clear labels, spaced out, meant to be skimmed at a glance
   const sections = [];
@@ -998,8 +1089,29 @@ function syncMindToCard(name, allowCoreShift) {
 
 // best-effort split of a two-sentence thought into a feeling-sentence
 // and a want-sentence; falls back gracefully if there's only one
+// merges a fragment back into the next one when splitting on [.!?]
+// only looks like a sentence end because it terminates in a known
+// abbreviation (SENTENCE_ABBREVIATIONS, defined above with the other
+// constants) — without this, "Dr." gets treated as a full sentence
+// boundary, confirmed as a real, reproducible failure: "She thinks of
+// Dr. Smith and feels afraid..." fractures into "She thinks of Dr."
+// as its own sentence, corrupting whatever comes after it (typically
+// the want text extracted from a reveal).
 function splitThoughtSentences(thought) {
-  const sentences = thought.split(/(?<=[.!?])\s+/).filter(Boolean);
+  const rawSentences = thought.split(/(?<=[.!?])\s+/).filter(Boolean);
+  // merge a fragment back into the next one when it only looks like a
+  // sentence end because it terminates in a known abbreviation
+  const sentences = [];
+  for (let i = 0; i < rawSentences.length; i++) {
+    const s = rawSentences[i];
+    const words = s.trim().split(/\s+/);
+    const lastWord = (words[words.length - 1] || "").replace(/\.$/, "");
+    if (SENTENCE_ABBREVIATIONS.has(lastWord) && i + 1 < rawSentences.length) {
+      rawSentences[i + 1] = s + " " + rawSentences[i + 1];
+      continue;
+    }
+    sentences.push(s);
+  }
   return { feelingSentence: sentences[0] || thought, wantSentence: sentences[1] || null };
 }
 
@@ -1190,7 +1302,24 @@ function getLastActionType() {
 const ESTIMATED_CHARS_PER_TURN = 900; // a rough, deliberately generous estimate — better to over-include than silently miss someone
 function recentTurnsText(text, turnCount) {
   const n = typeof turnCount === "number" && turnCount > 0 ? turnCount : 3;
-  return text.slice(-(n * ESTIMATED_CHARS_PER_TURN));
+  const base = text.slice(-(n * ESTIMATED_CHARS_PER_TURN));
+  // history is used here only as a supplement, never the primary or
+  // sole source — testing already confirmed a real failure mode where
+  // trusting it alone produced zero active characters when its text
+  // field was stale or empty. Used this way, that risk can't recur:
+  // if history is unreliable, this contributes nothing and the base
+  // slice above is unaffected; if it's reliable, it catches one real
+  // gap the estimate can still miss — a single turn genuinely longer
+  // than the whole estimated window, which the flat slice wouldn't
+  // fully cover even though it's the single most recent turn.
+  let supplement = "";
+  if (typeof history !== "undefined" && Array.isArray(history) && history.length > 0) {
+    const last = history[history.length - 1];
+    if (last && typeof last.text === "string" && last.text.length > 0) {
+      supplement = last.text;
+    }
+  }
+  return supplement ? base + "\n" + supplement : base;
 }
 
 const FRONT_MEMORY_MARKER = "[UNSAID hint]";
@@ -1215,7 +1344,7 @@ function syncFrontMemoryHint(subtleHints) {
 
 // something a character revealed on turn 1 can still reach the AI on
 // turn 1000, not just while their card happens to get triggered.
-function syncCoreMemory(maxEntries, enabled) {
+function syncCoreMemory(maxEntries, enabled, percent) {
   if (!state.memory || typeof state.memory !== "object") return;
 
   // off by default, and can be turned off after having been on — either
@@ -1270,9 +1399,16 @@ function syncCoreMemory(maxEntries, enabled) {
 
   const existing = (state.memory.context || "").split(CORE_MEMORY_MARKER)[0].replace(/\s+$/, "");
   let block = `${header}\n${lines.join("\n")}`;
+  // scales with the model's actual context size rather than a flat
+  // number — a fixed cap makes no sense across the wide range of
+  // context sizes different models/plans actually offer. Falls back
+  // to a flat number only if info.maxChars genuinely isn't available.
+  const memoryBudget = (typeof info !== "undefined" && info && typeof info.maxChars === "number")
+    ? Math.max(200, Math.round(info.maxChars * ((typeof percent === "number" ? percent : MEMORY_CONTEXT_PERCENT * 100) / 100)))
+    : MEMORY_CONTEXT_FALLBACK_LENGTH;
   // the Memory field has a real (if not precisely documented) size limit —
   // trim entries off the end rather than risk overflowing it silently
-  while (block.length > MAX_MEMORY_CONTEXT_LENGTH && lines.length > 1) {
+  while (block.length > memoryBudget && lines.length > 1) {
     lines.pop();
     block = `${header}\n${lines.join("\n")}`;
   }
