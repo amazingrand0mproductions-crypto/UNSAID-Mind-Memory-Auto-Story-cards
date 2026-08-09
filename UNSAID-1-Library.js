@@ -89,47 +89,65 @@
 //    prepends "You " to Do actions and wraps Say actions as
 //    You say, "..." before this script ever sees them, so an anchored
 //    match would only ever fire on Story-mode input and silently miss
-//    the two most common action types. It's also less likely to fire
-//    on its own during the player's own Do/Say actions specifically,
-//    so it doesn't compete for attention right when they've taken a
-//    deliberate action. A live style hint — "let hidden feelings
-//    color actions without stating them" — rides in
+//    the two most common action types. It's also, configurably, less
+//    likely to fire on its own during the player's own Do/Say actions
+//    specifically, so it doesn't compete for attention right when
+//    they've taken a deliberate action. A live style hint — "let
+//    hidden feelings color actions without stating them" — rides in
 //    frontMemory, the part of context closest to the point of
 //    generation, separate from the factual summary kept in Memory.
+//    Who counts as "active" and eligible for a reveal is judged over a
+//    configurable window sized in estimated turns, not a small fixed
+//    slice of text — a single detailed turn can run several thousand
+//    characters, and a character clearly present early in a long turn
+//    was getting missed entirely by a slice too short to reach them.
+//
 //
 // 2. CODEX
 //    Tracks how many times each new name is mentioned and only writes
 //    a Story Card once it clears a configurable threshold, so
-//    background one-off names don't get cards. Recognizes when a
-//    shorter and longer version of the same name refer to one entity
-//    ("Marcus" / "Marcus Cole") instead of doubling up, and never
-//    cards the player's own character — named manually, or, in
-//    Multiplayer, every character the platform already knows about —
-//    recognizing them under any title or honorific the story gives
-//    them ("Kyle Walker" excludes "Emperor Kyle Walker" too, not just
-//    an exact match). Builds the right template for a character,
-//    location, item, or faction, and keeps a separate tracking card
-//    per type. When more
-//    than one name qualifies, it always picks whichever is genuinely
-//    mentioned most, not just whichever comes up first — a stray
-//    false positive that slips past the name filters can't camp in
-//    front of a real, frequently-mentioned name and block it. A bare
-//    title ("Emperor," "General") is never specific enough to be its
-//    own subject, but the same word leading an actual name ("Emperor
-//    Kyle Walker") is completely normal and unaffected. Delete a card
-//    to have Codex redo it. New characters join the private-thoughts
-//    cast automatically — and so does any character card that already
-//    existed before UNSAID was ever installed, adopted in the moment
-//    it's first noticed, so a hand-made cast works immediately. A
-//    failed attempt (the model didn't produce a usable card) counts
-//    against a retry budget the same way a successful one does — once
-//    that's used up, Codex gives up on that name for good. Rather than
-//    let that happen silently and invisibly, the last exhausted attempt
-//    says so plainly and points at the config card's reset option.
+//    background one-off names don't get cards. Multi-word names with a
+//    lowercase "of" ("Sword of Power") are tracked as one candidate,
+//    not split into fragments — confirmed from real play that without
+//    this, a fragment like "Sword" alone could out-mention and out-
+//    compete the real, complete name, burning through the entire retry
+//    budget on something too incomplete to ever get a usable response.
+//    A sentence-initial stopword glued onto an otherwise real name
+//    ("The Sword of Power...") has the stopword stripped rather than
+//    losing the whole mention. Recognizes when a shorter and longer
+//    version of the same name refer to one entity ("Marcus" / "Marcus
+//    Cole") instead of doubling up, and never cards the player's own
+//    character — named manually, or, in Multiplayer, every character
+//    the platform already knows about — recognizing them under any
+//    title or honorific the story gives them ("Kyle Walker" excludes
+//    "Emperor Kyle Walker" too, not just an exact match). Builds the
+//    right template for a character, location, item, or faction, and
+//    keeps a separate tracking card per type. Up to three eligible
+//    names are requested together in a single instruction rather than
+//    one at a time — nothing in the platform limits a script to one
+//    addStoryCard per turn, so there's no reason to clear a backlog
+//    that slowly. Among everything eligible, it always picks whichever
+//    names are genuinely mentioned most, not just whichever come up
+//    first — a stray false positive that slips past the name filters
+//    can't camp in front of a real, frequently-mentioned name and
+//    block it. A bare title ("Emperor," "General") is never specific
+//    enough to be its own subject, but the same word leading an actual
+//    name ("Emperor Kyle Walker") is completely normal and unaffected.
+//    Delete a card to have Codex redo it. New characters join the
+//    private-thoughts cast automatically — and so does any character
+//    card that already existed before UNSAID was ever installed,
+//    adopted in the moment it's first noticed, so a hand-made cast
+//    works immediately. A failed attempt (the model didn't produce a
+//    usable card) counts against a retry budget the same way a
+//    successful one does — once that's used up, Codex gives up on that
+//    name for good. Rather than let that happen silently and
+//    invisibly, the last exhausted attempt says so plainly and points
+//    at the config card's reset option.
 //
 // A short, capped summary of each tracked character's core truth,
-// want, and top relationship rides in the adventure's always-on
-// Memory too — the one part of context that survives regardless of
+// want, and top relationship can optionally ride in the adventure's
+// always-on Memory too (off by default — see below) — the one part of
+// context that survives regardless of
 // how long it's been since a character was last mentioned, so
 // something established at turn 1 can still matter at turn 1000.
 //
@@ -140,28 +158,33 @@
 // crowd out the story. Story Cards are looked up by their keys rather
 // than list position, the config card self-heals its settings if a
 // line gets edited or reordered, and relationships, mention tracking,
-// and memory entries all stay capped instead of growing without
-// bound over a long story.
+// Codex's retry-attempt tracking, and memory entries all stay capped
+// instead of growing without bound over a long story.
+//
+// "/unsaid status" as an action writes a direct, current snapshot of
+// internal state to its own card on demand — what's tracked, what's
+// genuinely eligible for a card right now versus what's given up and
+// why, whether cache-efficient mode is active — so a real question
+// about what's actually happening doesn't require guesswork or a
+// screenshot to answer.
 
 const UNSAID_DEFAULTS = {
   enabled: true,
   codexEnabled: true,
-  memorySyncEnabled: true,
+  memorySyncEnabled: false, // off by default — private data belongs on the character's own card, not in Plot Essentials
   showThoughtsInStory: false, // when false, reveals go to the character's card, not the narrative
   subtleHints: true,           // let hidden feelings quietly color visible actions/body language
   allowCoreShift: true,        // whether a major event can ever rewrite a character's core truth
   chance: 0.3,        // chance per turn a thought fires, when someone qualifies
   cooldown: 3,          // turns a character must wait before thinking again
+  reduceDuringActions: true,  // ease off the reveal chance specifically during the player's own Do/Say
+  recentTurnsWindow: 3,         // how many recent turns count as "active" for a character
   mentionThreshold: 3,   // a name needs MORE than this many mentions before Codex cards it
   codexCooldown: 5,       // minimum turns between two Codex triggers, of any name
   codexMaxAttempts: 5,     // retries on a name before Codex gives up on it
   memoryMaxEntries: 8,      // how many characters' core truths ride in always-on memory
   playerName: ""             // if set, Codex will never write a card for this name
 };
-
-// -- fixed values, not exposed as settings — Codex's own timing is
-// configurable further down, per explicit request; these two aren't --
-const REDUCE_DURING_ACTIONS = true; // less likely to interrupt the player's own Do/Say actions
 
 // -- context & field budgets --
 const CONTEXT_SAFETY_MARGIN = 20; // leave a little headroom below the platform's stated limit
@@ -184,7 +207,8 @@ const REVEALS_BEFORE_SHIFT_ELIGIBLE = 2; // reveals needed (founding one + at le
 const CORE_MEMORY_MARKER = "[UNSAID — core truths]";
 const MIND_NOTES_MARKER = "💭 Inner Life — private, not visible to other characters";
 const CAST_LIST_MARKER = "===";
-const CODEX_MAX_ATTEMPTS = 3; // give up on a name after this many failed tries
+const CODEX_MAX_ATTEMPTS = 5; // give up on a name after this many failed tries (fallback if config value is somehow missing)
+const CODEX_MAX_CANDIDATES_PER_TURN = 3; // how many profiles to request in a single instruction
 
 // words that should never START a candidate name — pronouns,
 // conjunctions, common sentence-openers, and the like. Checked against
@@ -324,13 +348,15 @@ function initUnsaid() {
       turn: 0,
       pending: null,
       forcedPeek: null,
-      codex: { mentionCounts: {}, attempts: {}, pendingName: null, pendingType: null }
+      codex: { mentionCounts: {}, attempts: {}, pendingNames: [], pendingTypes: {} }
     };
   }
   if (!state.unsaid.codex) {
-    state.unsaid.codex = { mentionCounts: {}, attempts: {}, pendingName: null, pendingType: null };
+    state.unsaid.codex = { mentionCounts: {}, attempts: {}, pendingNames: [], pendingTypes: {} };
   }
   if (!state.unsaid.codex.mentionCounts) state.unsaid.codex.mentionCounts = {};
+  if (!state.unsaid.codex.pendingNames) state.unsaid.codex.pendingNames = [];
+  if (!state.unsaid.codex.pendingTypes) state.unsaid.codex.pendingTypes = {};
   ensureConfigCard();
 }
 
@@ -379,6 +405,8 @@ function ensureConfigCard() {
       "-- Private Thoughts --\n" +
       "> Chance of a thought per turn (0 to 1): 0.3\n" +
       "> Turns before the same character can think again: 3\n" +
+      "> Ease off during your own Do/Say actions: true\n" +
+      "> Recent turns counted as \"active\": 3\n" +
       "> Show private thoughts in the story text: false\n" +
       "> Let hidden feelings subtly color actions: true\n" +
       "-- Core Truth --\n" +
@@ -390,7 +418,7 @@ function ensureConfigCard() {
       "> Reset Codex tracking now: false\n" +
       "> Player character (skip when Codexing): \n" +
       "-- Memory --\n" +
-      "> Sync core truths to always-on memory: true\n" +
+      "> Sync core truths to always-on memory: false\n" +
       "> Characters remembered in long-term memory: 8";
     card.description =
       "UNSAID Config — what each setting above does:\n" +
@@ -398,6 +426,8 @@ function ensureConfigCard() {
       "- Enable Codex: turns automatic Story Card generation on or off by itself. Turn this off to keep private thoughts without new cards being made.\n" +
       "- Chance of a thought per turn: how likely (0 to 1) it is that an eligible, active character reveals a private thought on any given turn. Higher means more frequent reveals. (Reveals are already a little less likely during your own Do/Say actions, and a character's own core truth naturally takes a bit longer to shift than an ordinary mood, on a fixed pace behind the scenes.)\n" +
       "- Turns before the same character can think again: a cooldown, in turns, before that same character is eligible for another thought — keeps one character from dominating.\n" +
+      "- Ease off during your own Do/Say actions: when true (default), a reveal is less likely to fire specifically on turns where you took a deliberate Do or Say action, so it doesn't compete for attention right when you've acted. Turns you didn't directly drive (Continue, Story) are unaffected either way.\n" +
+      "- Recent turns counted as \"active\": roughly how many recent turns get scanned for who's currently active and eligible for a reveal, sized generously since a single detailed turn can run to several thousand characters — raise it if characters feel like they drop out of relevance too fast in a slow-paced story, lower it to keep the cast tightly focused on only the very latest turn.\n" +
       "- Show private thoughts in the story text: when false (default), a reveal never appears in your story — it's written straight to that character's own Story Card instead, so you look them up rather than having their private thoughts narrated at you. Set to true for the old behavior: an italicized line shown right in the story.\n" +
       "- Let hidden feelings subtly color actions: when true (default), a character's hidden feeling is allowed to quietly show through in their body language and tone in the actual story — a tight smile, a held breath — without ever stating the feeling outright or giving away their private thought. Turn off for characters who should read as unreadable.\n" +
       "- Allow major events to rewrite a core truth: on by default. A genuinely major story event can replace a character's core truth, earned naturally through ordinary play (no commands needed) — their old core truth is kept on file rather than erased, and how long the current one has held is shown right on their card. Turn off if you want core truths to stay permanent instead.\n" +
@@ -406,7 +436,7 @@ function ensureConfigCard() {
       "- Codex retries before giving up on a name: how many times Codex will try to get a properly formatted card out of the AI before giving up on that name for good. Raise this if cards are failing to complete.\n" +
       "- Reset Codex tracking now: set to true and Codex will forget every failed attempt and cooldown timer, then flip this back to false on its own. Use this if cards seem stuck and not being made.\n" +
       "- Player character (skip when Codexing): put your own character's name here if you don't want Codex writing an AI-authored profile for them. Leave blank to let Codex treat them like anyone else. In Multiplayer, everyone's character name is already skipped automatically.\n" +
-      "- Sync core truths to always-on memory: keeps a short, capped list of characters' core truths in your adventure's Memory, which the AI always sees — unlike Story Cards, which only appear when triggered. This is what lets something a character revealed on turn 1 still reach the AI on turn 1000.\n" +
+      "- Sync core truths to always-on memory: off by default. Every reveal already lives on the character's own Story Card notes — private, never sent to the AI, no context cost. Turning this on additionally keeps a short, capped summary in your adventure's Plot Essentials/Memory, which the AI always sees regardless of whether a card is currently triggered — the tradeoff is that summary does cost context and does reach the AI, unlike the card notes. Turn on only if you want something revealed on turn 1 to keep influencing the AI's writing on turn 1000 even for a character who hasn't come up in a while.\n" +
       "- Characters remembered in long-term memory: how many characters' core truths are allowed to ride in the always-on memory summary at once. Higher keeps more people relevant longer, but uses more of your context budget.\n\n" +
       "Add the names of characters who can have private thoughts below, one per line. Codex adds newly discovered characters here automatically.\n" +
       CAST_LIST_MARKER + "\n" +
@@ -451,6 +481,15 @@ function readUnsaidConfig() {
   if (cooldownMatch) {
     const parsedCooldown = parseInt(cooldownMatch[1], 10);
     if (!isNaN(parsedCooldown)) cfg.cooldown = Math.max(0, parsedCooldown);
+  }
+
+  const reduceMatch = card.entry.match(/Ease off during your own Do\/Say actions:\s*(true|false)/i);
+  if (reduceMatch) cfg.reduceDuringActions = reduceMatch[1].toLowerCase() === "true";
+
+  const recentTurnsMatch = card.entry.match(/Recent turns counted as "active":\s*(\d+)/i);
+  if (recentTurnsMatch) {
+    const parsedRecentTurns = parseInt(recentTurnsMatch[1], 10);
+    if (!isNaN(parsedRecentTurns)) cfg.recentTurnsWindow = Math.max(1, parsedRecentTurns);
   }
 
   const mentionMatch = card.entry.match(/Mentions needed before Codex creates a card:\s*(\d+)/i);
@@ -539,6 +578,8 @@ function readUnsaidConfig() {
     "-- Private Thoughts --\n" +
     `> Chance of a thought per turn (0 to 1): ${cfg.chance}\n` +
     `> Turns before the same character can think again: ${cfg.cooldown}\n` +
+    `> Ease off during your own Do/Say actions: ${cfg.reduceDuringActions}\n` +
+    `> Recent turns counted as "active": ${cfg.recentTurnsWindow}\n` +
     `> Show private thoughts in the story text: ${cfg.showThoughtsInStory}\n` +
     `> Let hidden feelings subtly color actions: ${cfg.subtleHints}\n` +
     "-- Core Truth --\n" +
@@ -590,11 +631,37 @@ function fitInstructionToBudget(baseText, instruction) {
 // the same mention is never counted more than once
 function trackMentions(text) {
   if (!state.unsaid || !state.unsaid.codex) return;
-  const matches = text.match(/\b([A-Z][a-zA-Z]*(?:\s+[A-Z][a-zA-Z]*){0,2})\b/g) || [];
+  // bridges a single lowercase "of" across two capitalized words
+  // ("Sword of Power") so it's captured as one candidate rather than
+  // splitting into fragments — confirmed from real play: without this,
+  // "Sword" alone got tracked as its own competing candidate, and being
+  // mentioned constantly, it won selection over and over while never
+  // being a complete enough name for the AI to write a real profile —
+  // burning through the entire retry budget on a fragment that was
+  // never going to succeed, while the real multi-word name never got
+  // a turn at all. Deliberately narrow to just "of," not "the"/"and"
+  // too — those turned out to cause a different real failure: a
+  // sentence-initial capitalized word directly followed by "the"
+  // ("Then the Sword of Power...") would greedily bridge into "Then
+  // the Sword," burning both extension slots on the wrong bridge and
+  // leaving "of Power" completely unmatched. Confirmed by testing that
+  // exact sentence directly. "of" alone doesn't share this risk near
+  // as often, since it rarely trails a bare sentence-initial word.
+  const matches = text.match(/\b([A-Z][a-zA-Z]*(?:\s+of\s+[A-Z][a-zA-Z]*|\s+[A-Z][a-zA-Z]*){0,2})\b/g) || [];
   matches.forEach(raw => {
-    const name = raw.trim();
-    const words = name.split(" ");
-    if (CODEX_STOPWORDS.has(words[0])) return;
+    let name = raw.trim();
+    let words = name.split(" ");
+    // a leading stopword doesn't just belong to the FIRST word of a
+    // candidate — sentence-initial capitalization means an ordinary
+    // article can end up glued onto a real multi-word name ("The Sword
+    // of Power..."). Dropping the whole candidate for that would lose
+    // a completely legitimate mention; stripping the stopword and
+    // keeping the rest counts it toward the name that actually matters.
+    while (words.length > 1 && CODEX_STOPWORDS.has(words[0])) {
+      words = words.slice(1);
+      name = words.join(" ");
+    }
+    if (words.length === 1 && CODEX_STOPWORDS.has(words[0])) return;
     // a bare title ("Emperor," "General") isn't specific enough to be
     // its own subject — but the same word leading a longer phrase
     // ("Emperor Kyle Walker") is a completely normal way to name
@@ -611,11 +678,21 @@ function trackMentions(text) {
 function pruneMentionCounts() {
   const counts = state.unsaid.codex.mentionCounts;
   const keys = Object.keys(counts);
-  if (keys.length <= MENTION_TRACKING_CAP + 50) return; // don't bother until it's well over
-  keys
-    .sort((a, b) => counts[a] - counts[b])
-    .slice(0, keys.length - MENTION_TRACKING_CAP)
-    .forEach(k => delete counts[k]);
+  if (keys.length > MENTION_TRACKING_CAP + 50) { // don't bother until it's well over
+    keys
+      .sort((a, b) => counts[a] - counts[b])
+      .slice(0, keys.length - MENTION_TRACKING_CAP)
+      .forEach(k => delete counts[k]);
+  }
+  // attempts was never cleaned up alongside mentionCounts — a name
+  // tried a few times and then never mentioned again (or crowded out
+  // of the top tracked names by others) would sit here forever over a
+  // very long story. Nothing left references an attempts entry once
+  // its mention count is gone, so there's nothing to lose by dropping it.
+  const attempts = state.unsaid.codex.attempts;
+  Object.keys(attempts).forEach(name => {
+    if (!(name in counts)) delete attempts[name];
+  });
 }
 
 // layered heuristic: keyword hints first (most reliable), then
@@ -684,12 +761,12 @@ function excludedNames(cfg) {
 // false-positive that slips past the stopword list can otherwise sit
 // at the front and burn through its retries before a genuinely
 // significant, frequently-mentioned name ever gets a turn.
-function findCodexCandidate(threshold, excludeNames, maxAttempts) {
+function findCodexCandidates(threshold, excludeNames, maxAttempts, maxCount) {
   const exclude = excludeNames || [];
   const cap = typeof maxAttempts === "number" ? maxAttempts : CODEX_MAX_ATTEMPTS;
+  const limit = typeof maxCount === "number" ? maxCount : CODEX_MAX_CANDIDATES_PER_TURN;
   const counts = state.unsaid.codex.mentionCounts;
-  let best = null;
-  let bestCount = -1;
+  const eligible = [];
   for (const name in counts) {
     if (counts[name] <= threshold) continue;
     // reuses the same word-subset match as duplicate-card detection —
@@ -700,33 +777,94 @@ function findCodexCandidate(threshold, excludeNames, maxAttempts) {
     if (exclude.some(ex => isSameCardEntity(ex, name))) continue;
     if (storyCards.some(c => isSameCardEntity(c.title, name))) continue;
     if ((state.unsaid.codex.attempts[name] || 0) >= cap) continue;
-    if (counts[name] > bestCount) {
-      best = name;
-      bestCount = counts[name];
-    }
+    eligible.push({ name, count: counts[name] });
   }
-  return best;
+  eligible.sort((a, b) => b.count - a.count);
+
+  // several eligible names can be fragments and full phrases of the
+  // same thing at once ("Sword" and "Sword of Power" both crossing the
+  // threshold from the same mentions) — picking both in one batch would
+  // waste a slot on a near-duplicate, so each pick excludes any name
+  // still in the running that's a word-subset match of one already
+  // taken this batch, the same logic used against existing cards above
+  const picked = [];
+  for (const candidate of eligible) {
+    if (picked.length >= limit) break;
+    if (picked.some(p => isSameCardEntity(p.name, candidate.name))) continue;
+    picked.push(candidate);
+  }
+  return picked.map(p => p.name);
 }
 
-// builds the hidden-profile instruction for whichever template fits
-function buildCodexInstruction(name, type) {
-  const fields = CARD_TEMPLATES[type] || CHARACTER_CARD_FIELDS;
-  const body = fields.map(f => `${f}: ${f === "Name" ? name : "..."}`).join("\n");
+// builds one instruction covering several candidates at once, each
+// wrapped in its own numbered 【CARD】 block — confirmed nothing in the
+// platform stops a script from creating more than one Story Card in a
+// single turn, so there's no reason to process a backlog of eligible
+// names one at a time when several can be requested together
+function buildCodexInstruction(names, text) {
+  const blocks = names.map((name, i) => {
+    const type = classifyCodexEntry(name, text);
+    const fields = CARD_TEMPLATES[type] || CHARACTER_CARD_FIELDS;
+    const body = fields.map(f => `${f}: ${f === "Name" ? name : "..."}`).join("\n");
+    const mind = type === "character" ? state.unsaid.minds[name] : null;
+    const knownNote = mind && mind.core
+      ? ` They've privately shown this about themselves: "${mind.core}" — let Personality and Background agree with it, not invent something that contradicts it.`
+      : "";
+    return `Profile ${i + 1} — "${name}":${knownNote}\n【CARD】\n${body}\n【/CARD】`;
+  }).join("\n\n");
 
-  // if private thoughts have already established something true about
-  // this character, hand it to Codex so the Personality/Background it
-  // writes doesn't contradict what's already been privately shown
-  const mind = type === "character" ? state.unsaid.minds[name] : null;
-  const knownNote = mind && mind.core
-    ? ` They've privately shown this about themselves: "${mind.core}" — let Personality and Background agree with it, not invent something that contradicts it.`
-    : "";
-
-  return `\n[Finish the story normally first — that's the priority. Then, on new lines after it, add a brief hidden profile for "${name}" wrapped between 【CARD】 and 【/CARD】, not part of the visible narrative:${knownNote}\n【CARD】\n${body}\n【/CARD】\nKeep each field to a few words — this should take one or two lines total, not paragraphs.]\n`;
+  return `\n[Finish the story normally first — that's the priority. Then, on new lines after it, add ${names.length > 1 ? "these brief hidden profiles" : "a brief hidden profile"} wrapped between 【CARD】 and 【/CARD】, not part of the visible narrative:\n${blocks}\nKeep each field to a few words — this should take one or two lines total per profile, not paragraphs.]\n`;
 }
 
 function codexLogTitle(type) {
   const heading = type.charAt(0).toUpperCase() + type.slice(1) + "s";
   return `UNSAID Codex Log — ${heading}`;
+}
+
+// a direct window into what UNSAID actually thinks is going on right
+// now, written on demand via "/unsaid status" — meant to answer,
+// without any back-and-forth, questions like "is this even running,"
+// "why hasn't anyone gotten a card yet," and "what does Codex think
+// is worth carding." Pure internal state, no AI involvement needed.
+function buildStatusReport(cfg) {
+  const lines = [];
+  lines.push(`UNSAID: ${cfg.enabled ? "enabled" : "DISABLED"}  |  Codex: ${cfg.codexEnabled ? "enabled" : "disabled"}  |  Turn: ${state.unsaid.turn}`);
+
+  const cacheCard = storyCards.find(c => c.title === "UNSAID — Important, Read This ⚠️");
+  if (cacheCard && cacheCard.entry && cacheCard.entry.indexOf("no longer detected") === -1) {
+    lines.push(`⚠️ Cache-efficient mode is currently detected — private thoughts and Codex cannot function right now, see that card for details.`);
+  }
+
+  const mindNames = Object.keys(state.unsaid.minds);
+  lines.push(`\nTracked minds (${mindNames.length}):`);
+  if (mindNames.length === 0) {
+    lines.push(`  none yet`);
+  } else {
+    mindNames.forEach(name => {
+      const m = state.unsaid.minds[name];
+      const coreNote = m.core ? "has a core truth" : "no standalone thought yet";
+      lines.push(`  ${name} — ${coreNote}, feeling: ${m.feeling || "none yet"}, ${m.revealCount || 0} reveal(s), last active turn ${m.lastTurn}`);
+    });
+  }
+
+  const counts = state.unsaid.codex.mentionCounts;
+  const attempts = state.unsaid.codex.attempts;
+  const tracked = Object.keys(counts);
+  const exhausted = tracked.filter(n => (attempts[n] || 0) >= cfg.codexMaxAttempts);
+  const eligible = tracked.filter(n => counts[n] > cfg.mentionThreshold && !exhausted.includes(n));
+  lines.push(`\nCodex mention-tracking: ${tracked.length} name(s) tracked, ${eligible.length} genuinely eligible now (above the mention threshold of ${cfg.mentionThreshold}, not yet exhausted)`);
+  if (eligible.length > 0) {
+    lines.push(`  eligible now: ${eligible.slice(0, 10).map(n => `${n} (${counts[n]}x)`).join(", ")}${eligible.length > 10 ? ", ..." : ""}`);
+  }
+  if (exhausted.length > 0) {
+    lines.push(`  gave up after ${cfg.codexMaxAttempts} attempts: ${exhausted.join(", ")} — "Reset Codex tracking now" to retry`);
+  }
+  const turnsSinceCodex = state.unsaid.turn - (state.unsaid.codex.lastTriggerTurn || 0);
+  lines.push(`  ${turnsSinceCodex}/${cfg.codexCooldown} turns since Codex last triggered`);
+
+  lines.push(`\nCast (${cfg.cast.length}): ${cfg.cast.join(", ") || "empty"}`);
+
+  return lines.join("\n");
 }
 
 // one dedicated tracking card per type, so each stays short and easy
@@ -1026,6 +1164,35 @@ function getLastActionType() {
   return null;
 }
 
+// a flat character-count slice of the sliding context can badly
+// under- or over-shoot "recently" depending on how long turns actually
+// run — a single AI response can be several thousand characters in a
+// detailed, slow-paced story, so a small fixed slice might only cover
+// the tail end of the most recent turn and miss a character who was
+// clearly active earlier in that same response. Scanning an actual
+// number of recent turns from the real history array is more robust
+// to that variance. Falls back to the flat slice when history isn't
+// available (e.g. a test harness, or a hook that doesn't receive it).
+// a flat character-count slice of the sliding context can badly
+// under- or over-shoot "recently" depending on how long turns actually
+// run — a single AI response can be several thousand characters in a
+// detailed, slow-paced story, so a small fixed slice might only cover
+// the tail end of the most recent turn and miss a character who was
+// clearly active earlier in that same response. Sizing the slice by
+// an estimated number of turns fixes that. Deliberately built on the
+// text parameter alone, not the history array: testing found a real,
+// concerning failure mode where history's per-entry text can be stale
+// or empty in ways this script has no way to verify are always kept
+// in sync with what's actually about to be sent to the AI — trusting
+// that silently produced zero active characters, ever, with nothing
+// to indicate why. The text parameter has no such uncertainty: it's
+// confirmed to always be exactly what's happening right now.
+const ESTIMATED_CHARS_PER_TURN = 900; // a rough, deliberately generous estimate — better to over-include than silently miss someone
+function recentTurnsText(text, turnCount) {
+  const n = typeof turnCount === "number" && turnCount > 0 ? turnCount : 3;
+  return text.slice(-(n * ESTIMATED_CHARS_PER_TURN));
+}
+
 const FRONT_MEMORY_MARKER = "[UNSAID hint]";
 
 // frontMemory sits at the very end of context, right after the last
@@ -1048,8 +1215,19 @@ function syncFrontMemoryHint(subtleHints) {
 
 // something a character revealed on turn 1 can still reach the AI on
 // turn 1000, not just while their card happens to get triggered.
-function syncCoreMemory(maxEntries) {
+function syncCoreMemory(maxEntries, enabled) {
   if (!state.memory || typeof state.memory !== "object") return;
+
+  // off by default, and can be turned off after having been on — either
+  // way, a block written during an earlier turn shouldn't just sit
+  // there forever once this stops running. Explicitly clear it rather
+  // than silently leave stale private data behind in Plot Essentials.
+  if (!enabled) {
+    const withoutBlock = (state.memory.context || "").split(CORE_MEMORY_MARKER)[0].replace(/\s+$/, "");
+    if (withoutBlock !== (state.memory.context || "")) state.memory.context = withoutBlock;
+    return;
+  }
+
   const cap = typeof maxEntries === "number" ? maxEntries : CORE_MEMORY_MAX_ENTRIES;
 
   const names = Object.keys(state.unsaid.minds)

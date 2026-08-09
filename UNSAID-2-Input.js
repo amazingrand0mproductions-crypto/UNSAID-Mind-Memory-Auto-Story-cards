@@ -14,6 +14,29 @@ const modifier = (text) => {
     // actually been mentioned enough times to earn a card
     trackMentions(text);
 
+    // typing "/unsaid status" writes a direct, current snapshot of
+    // internal state to a dedicated card — what's tracked, what Codex
+    // is close to carding, what's given up and why, whether cache-
+    // efficient mode is active. No AI involvement needed for this one,
+    // so it completes immediately, the same turn. Same not-anchored
+    // reasoning as /peek: Do/Say text gets reformatted before this
+    // hook ever sees it.
+    if (/\/unsaid\s+status\b/i.test(text)) {
+      const cfg = readUnsaidConfig();
+      const report = buildStatusReport(cfg);
+      let card = storyCards.find(c => c.title === "UNSAID — Status");
+      if (!card) {
+        card = createOrFindCard("unsaid status", " ", "Class");
+        card.title = "UNSAID — Status";
+        card.keys = "unsaid status";
+        card.type = "Class";
+      }
+      card.entry = report;
+      card.description = "Regenerated fresh each time you type \"/unsaid status\" as an action. Not sent to the AI.";
+      state.message = "📋 Status written — check the \"UNSAID — Status\" card.";
+      return { text: "(A quiet moment passes.)" };
+    }
+
     // typing "/peek <name>" forces an immediate thought reveal for that
     // character on this turn, bypassing the usual chance roll and cooldown.
     // "/peek <name> core" instead asks specifically whether this moment

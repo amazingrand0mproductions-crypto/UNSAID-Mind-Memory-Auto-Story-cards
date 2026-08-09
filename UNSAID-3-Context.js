@@ -31,13 +31,13 @@ const modifier = (text) => {
 
     if (!cfg.enabled) {
       state.unsaid.pending = null;
-      state.unsaid.codex.pendingName = null;
+      state.unsaid.codex.pendingNames = [];
       return { text };
     }
 
     state.unsaid.turn++;
 
-    const recent = text.slice(-600);
+    const recent = recentTurnsText(text, cfg.recentTurnsWindow);
     const active = cfg.cast.filter(name => nameAppears(name, recent));
 
     // --- /peek: a forced reveal always wins the turn it's used ---
@@ -46,7 +46,7 @@ const modifier = (text) => {
       // rather than silently falling back to an ordinary peek
       state.message = `🌗 Core-shift checks are off — turn on "Allow major events to rewrite a core truth" in the config card first.`;
       state.unsaid.pending = null;
-      state.unsaid.codex.pendingName = null;
+      state.unsaid.codex.pendingNames = [];
       return { text };
     }
 
@@ -55,39 +55,45 @@ const modifier = (text) => {
       const fitted = fitInstructionToBudget(text, instruction);
       if (fitted) {
         state.unsaid.pending = forcedPeek;
-        state.unsaid.codex.pendingName = null;
+        state.unsaid.codex.pendingNames = [];
         return { text: text + fitted };
       }
     } else if (forcedPeek) {
       const fitted = buildAndFitThoughtInstruction(forcedPeek, active, text, cfg.allowCoreShift);
       if (fitted) {
         state.unsaid.pending = forcedPeek;
-        state.unsaid.codex.pendingName = null;
+        state.unsaid.codex.pendingNames = [];
         return { text: text + fitted };
       }
     }
 
-    // --- Codex: describe something once it's been mentioned enough times,
-    // no more than once every codexCooldown turns ---
+    // --- Codex: describe several eligible names at once, no more than
+    // once every codexCooldown turns. Nothing in the platform limits a
+    // script to one addStoryCard per turn — requesting several profiles
+    // together clears a backlog far faster than one candidate at a time
+    // ever could ---
     const sinceLastCodex = state.unsaid.turn - (state.unsaid.codex.lastTriggerTurn || 0);
     if (cfg.codexEnabled && sinceLastCodex >= cfg.codexCooldown) {
-      const candidate = findCodexCandidate(cfg.mentionThreshold, excludedNames(cfg), cfg.codexMaxAttempts);
-      if (candidate) {
-        const type = classifyCodexEntry(candidate, text);
-        const instruction = buildCodexInstruction(candidate, type);
+      const candidates = findCodexCandidates(cfg.mentionThreshold, excludedNames(cfg), cfg.codexMaxAttempts);
+      if (candidates.length > 0) {
+        const instruction = buildCodexInstruction(candidates, text);
         const fitted = fitInstructionToBudget(text, instruction);
 
         if (fitted) {
-          state.unsaid.codex.attempts[candidate] = (state.unsaid.codex.attempts[candidate] || 0) + 1;
-          state.unsaid.codex.pendingName = candidate;
-          state.unsaid.codex.pendingType = type;
+          const types = {};
+          candidates.forEach(name => {
+            state.unsaid.codex.attempts[name] = (state.unsaid.codex.attempts[name] || 0) + 1;
+            types[name] = classifyCodexEntry(name, text);
+          });
+          state.unsaid.codex.pendingNames = candidates;
+          state.unsaid.codex.pendingTypes = types;
           state.unsaid.codex.lastTriggerTurn = state.unsaid.turn;
           state.unsaid.pending = null; // don't stack a thought reveal the same turn
           return { text: text + fitted };
         }
       }
     }
-    state.unsaid.codex.pendingName = null;
+    state.unsaid.codex.pendingNames = [];
 
     // --- Private thoughts, the usual chance-based way ---
     if (cfg.cast.length > 0) {
@@ -101,7 +107,7 @@ const modifier = (text) => {
       // off specifically for Do/Say, leave Continue/Story untouched
       const actionType = getLastActionType();
       const isPlayerAction = actionType === "do" || actionType === "say";
-      let effectiveChance = (REDUCE_DURING_ACTIONS && isPlayerAction) ? cfg.chance * 0.5 : cfg.chance;
+      let effectiveChance = (cfg.reduceDuringActions && isPlayerAction) ? cfg.chance * 0.5 : cfg.chance;
 
       // getting a whole cast their first reveal shouldn't be left purely
       // to chance stacked turn after turn — while anyone active and

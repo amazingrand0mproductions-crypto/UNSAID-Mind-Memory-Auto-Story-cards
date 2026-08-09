@@ -11,25 +11,40 @@ const modifier = (text) => {
   try {
     const cfg = readUnsaidConfig();
 
-    // --- Codex: parse the hidden profile block and build a Story Card ---
-    // Checked regardless of whether we were expecting one: on cache
+    // --- Codex: parse hidden profile blocks and build Story Cards ---
+    // Multiple blocks can appear in one response now, since a single
+    // instruction can request several profiles at once — nothing in
+    // the platform limits a script to one addStoryCard per turn, so
+    // there's no reason to only ever process one candidate at a time.
+    // Blocks are matched in order against the names actually requested
+    // this turn (Profile 1 → pendingNames[0], Profile 2 → [1], etc.),
+    // the same trust-our-own-tracking approach the single-card version
+    // always used rather than trusting whatever the AI wrote as "Name".
+    // Checked regardless of whether any were expected: on cache
     // efficient models (or after any mismatch between what Context asked
     // for and what actually got generated), a 【CARD】 block can show up
     // unrequested — usually the model imitating a pattern left visible in
     // its own story history. Left alone, that block sits in the visible
-    // narrative forever and teaches the model to keep repeating it. So it
-    // always gets found and removed; it's only turned into an actual
-    // Story Card when we know what name and type it's supposed to be.
-    const blockPattern = /【CARD】([\s\S]*?)【\/CARD】/;
+    // narrative forever and teaches the model to keep repeating it. So
+    // every closed block always gets found and removed; it's only
+    // turned into an actual Story Card when it lines up with a name we
+    // actually asked for.
+    const blockPattern = /【CARD】([\s\S]*?)【\/CARD】/g;
     const openTagPattern = /【CARD】/;
-    const match = text.match(blockPattern);
-    const expectedName = state.unsaid.codex.pendingName;
-    const expectedType = state.unsaid.codex.pendingType;
-    let codexSucceeded = false;
+    const blockMatches = [...text.matchAll(blockPattern)];
+    const expectedNames = state.unsaid.codex.pendingNames || [];
+    const expectedTypes = state.unsaid.codex.pendingTypes || {};
+    const succeededNames = new Set();
 
-    if (match && expectedName) {
-      const name = expectedName;
-      const type = expectedType;
+    blockMatches.forEach((match, i) => {
+      const name = expectedNames[i];
+      // falls back to "character" rather than leaving this undefined —
+      // expectedNames and expectedTypes are always set together in
+      // Context.js, so this shouldn't normally diverge, but a card
+      // with an undefined type could look broken in AI Dungeon's own
+      // Story Card UI, and the fallback costs nothing to have in place
+      const type = expectedTypes[name] || "character";
+      if (!name) return; // more blocks than we actually requested — stripped below, not carded
 
       const fields = {};
       match[1].split("\n").forEach(line => {
@@ -38,9 +53,9 @@ const modifier = (text) => {
       });
 
       if (fields["Name"]) {
-        codexSucceeded = true;
+        succeededNames.add(name);
         // exact match here on purpose, unlike syncMindToCard's lookup:
-        // findCodexCandidate already excludes any name matching an
+        // findCodexCandidates already excludes any name matching an
         // existing card via isSameCardEntity, so by now "name" normally
         // has no card at all. This writes to entry — the card's actual
         // lore — not just notes, so loosening the match here risks
@@ -69,7 +84,6 @@ const modifier = (text) => {
 
         logCodexCard(name, type, state.unsaid.codex.mentionCounts[name] || 0);
         forgetMentionTracking(name); // no longer needed once the card exists
-        state.message = `📇 Codex created a ${type} card for ${name}.`;
 
         // newly discovered characters automatically join the private-thoughts cast
         if (type === "character") {
@@ -82,10 +96,18 @@ const modifier = (text) => {
           syncMindToCard(name, cfg.allowCoreShift);
         }
       }
+    });
+
+    if (succeededNames.size > 0) {
+      const names = [...succeededNames];
+      state.message = names.length === 1
+        ? `📇 Codex created a ${expectedTypes[names[0]]} card for ${names[0]}.`
+        : `📇 Codex created ${names.length} cards: ${names.join(", ")}.`;
     }
 
-    // strip a matched (closed) block regardless of whether it was expected
-    if (match) {
+    // strip every matched (closed) block regardless of whether it lined
+    // up with something we expected
+    if (blockMatches.length > 0) {
       text = text.replace(blockPattern, "").replace(/\n{3,}/g, "\n\n");
     } else if (openTagPattern.test(text)) {
       // an opening tag with no closing tag means the response got cut off
@@ -96,23 +118,26 @@ const modifier = (text) => {
       text = text.replace(/【CARD】[\s\S]*$/, "").replace(/\n{3,}/g, "\n\n").trimEnd();
     }
 
-    // an attempt that was requested and didn't produce a usable card —
-    // whether the model ignored the instruction entirely, or wrote
-    // something that didn't include a Name field — still counted against
-    // the retry budget the moment it was requested (in Context.js). Once
-    // that budget is used up, Codex silently gives up on this name
-    // forever, with no card and no explanation, unless told otherwise.
-    // Surfacing that here turns an invisible dead end into something
-    // actionable: delete a stray card, or reset Codex tracking to retry.
-    if (expectedName && !codexSucceeded) {
-      const usedAttempts = state.unsaid.codex.attempts[expectedName] || 0;
-      if (usedAttempts >= cfg.codexMaxAttempts) {
-        state.message = `📇 Codex gave up on "${expectedName}" after ${usedAttempts} attempt${usedAttempts === 1 ? "" : "s"} without a usable response. Use "Reset Codex tracking now" in the config card to let it try again.`;
-      }
+    // any requested name that didn't end up with a successful block —
+    // whether the model skipped it, ran out of room, or wrote something
+    // without a Name field — still counted against its retry budget the
+    // moment it was requested (in Context.js). Once that budget is used
+    // up, Codex silently gives up on that name forever, with no card and
+    // no explanation, unless told otherwise. Surfacing that here turns
+    // an invisible dead end into something actionable: delete a stray
+    // card, or reset Codex tracking to retry.
+    const exhausted = expectedNames.filter(name => {
+      if (succeededNames.has(name)) return false;
+      return (state.unsaid.codex.attempts[name] || 0) >= cfg.codexMaxAttempts;
+    });
+    if (exhausted.length > 0) {
+      state.message = exhausted.length === 1
+        ? `📇 Codex gave up on "${exhausted[0]}" after ${state.unsaid.codex.attempts[exhausted[0]]} attempts without a usable response. Use "Reset Codex tracking now" in the config card to let it try again.`
+        : `📇 Codex gave up on ${exhausted.length} names (${exhausted.join(", ")}) after repeated attempts without a usable response. Use "Reset Codex tracking now" in the config card to let them try again.`;
     }
 
-    state.unsaid.codex.pendingName = null;
-    state.unsaid.codex.pendingType = null;
+    state.unsaid.codex.pendingNames = [];
+    state.unsaid.codex.pendingTypes = {};
 
     // count mentions only now that any 【CARD】 scaffolding has been
     // stripped out — otherwise the script's own field labels (and the
@@ -284,7 +309,7 @@ const modifier = (text) => {
       state.unsaid.pending = null;
     }
 
-    if (cfg.memorySyncEnabled) syncCoreMemory(cfg.memoryMaxEntries);
+    syncCoreMemory(cfg.memoryMaxEntries, cfg.memorySyncEnabled);
     syncFrontMemoryHint(cfg.subtleHints);
 
     return { text };
