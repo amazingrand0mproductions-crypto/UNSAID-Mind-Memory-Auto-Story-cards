@@ -43,7 +43,7 @@ const modifier = (text) => {
       // Context.js, so this shouldn't normally diverge, but a card
       // with an undefined type could look broken in AI Dungeon's own
       // Story Card UI, and the fallback costs nothing to have in place
-      const type = expectedTypes[name] || "character";
+      let type = expectedTypes[name] || "character";
       if (!name) return; // more blocks than we actually requested — stripped below, not carded
 
       const fields = {};
@@ -51,6 +51,23 @@ const modifier = (text) => {
         const fieldMatch = line.match(/^\s*([A-Za-z ]+):\s*(.+)$/);
         if (fieldMatch) fields[fieldMatch[1].trim()] = fieldMatch[2].trim();
       });
+
+      // the upfront classification was a heuristic guess, not a fact —
+      // it can't enumerate every real-world place name, and the
+      // instruction now explicitly invites the model to correct it.
+      // Whichever set of fields the response actually used is a far
+      // more reliable signal of the real type than the guess was —
+      // "Location"/"Key Locations" means it's a location regardless
+      // of what was originally assumed, "Properties"/"Origin" means
+      // it's an item. Item and faction share every other field, so
+      // without one of those two there's no clear signal to override
+      // on — the original guess stands rather than trading one weak
+      // guess for another.
+      if (fields["Location"] || fields["Key Locations"]) type = "location";
+      else if (fields["Properties"] || fields["Origin"]) type = "item";
+      else if (fields["Type"] && !fields["Race"] && !fields["Personality"] && !fields["Background"] && type === "character") {
+        type = "faction"; // clearly not a character, no item-specific fields either — faction is the safer default of the two
+      }
 
       if (fields["Name"]) {
         succeededNames.add(name);

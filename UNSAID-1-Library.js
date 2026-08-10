@@ -128,13 +128,26 @@
 //    the platform already knows about — recognizing them under any
 //    title or honorific the story gives them ("Kyle Walker" excludes
 //    "Emperor Kyle Walker" too, not just an exact match). Builds the
-//    right template for a character, location, item, or faction, and
-//    keeps a separate tracking card per type. Up to three eligible
-//    names are requested together in a single instruction rather than
-//    one at a time — nothing in the platform limits a script to one
-//    addStoryCard per turn, so there's no reason to clear a backlog
-//    that slowly. Among everything eligible, it always picks whichever
-//    names are genuinely mentioned most, not just whichever come up
+//    right template for a character, location, item, or faction — but
+//    that upfront classification is a heuristic guess, not a fact, and
+//    can't enumerate every real-world place name a story might mention
+//    ("Manhattan" has no descriptive word in it for a heuristic to
+//    catch). Rather than force a wrong template on the model (asking
+//    a city for its Race and Strength Level), the instruction invites
+//    a correction, and whichever fields the response actually uses —
+//    Location-specific, item-specific, or neither — decide the card's
+//    real type, overriding the original guess when they disagree. The
+//    same instruction also explicitly permits drawing on general
+//    knowledge for anything real-world, and a reasonable in-fiction
+//    guess for anything invented the story simply hasn't detailed
+//    yet, rather than leaving a field blank for lack of story-given
+//    specifics. Keeps a separate tracking card per type. Up to three
+//    eligible names are requested together in a single instruction
+//    rather than one at a time — nothing in the platform limits a
+//    script to one addStoryCard per turn, so there's no reason to
+//    clear a backlog that slowly. Among everything eligible, it
+//    always picks whichever names are genuinely mentioned most, not
+//    just whichever come up
 //    first — a stray false positive that slips past the name filters
 //    can't camp in front of a real, frequently-mentioned name and
 //    block it. A bare title ("Emperor," "General") is never specific
@@ -428,8 +441,17 @@ function nameAppears(name, text) {
 // already exists. Use the index when we get one; fall back to a keys
 // search only for that already-exists case.
 function createOrFindCard(keys, initialEntry, type) {
-  const idx = addStoryCard(keys, initialEntry, type);
-  if (idx !== false && storyCards[idx]) return storyCards[idx];
+  // confirmed against the platform's actual sandbox source: addStoryCard
+  // always pushes a new card and returns storyCards.length (the array's
+  // new length), not the new card's index, and never returns false for
+  // a duplicate key. The index is therefore length - 1. Every call site
+  // of this function already checks for an existing card first, so this
+  // was never visibly broken — the .find() fallback below happened to
+  // paper over it — but it's worth being correct about what the
+  // platform actually does rather than relying on that coincidence.
+  addStoryCard(keys, initialEntry, type);
+  const idx = storyCards.length - 1;
+  if (storyCards[idx]) return storyCards[idx];
   return storyCards.find(c => c.keys === keys) || storyCards[storyCards.length - 1];
 }
 
@@ -467,7 +489,7 @@ function ensureConfigCard() {
     card.description =
       "UNSAID Config — what each setting above does:\n" +
       "- Enable UNSAID: master switch for the whole script (private thoughts and Codex together). False turns everything off.\n" +
-      "- Enable Codex: turns automatic Story Card generation on or off by itself. Turn this off to keep private thoughts without new cards being made.\n" +
+      "- Enable Codex: turns automatic Story Card generation on or off by itself. Turn this off to keep private thoughts working normally on your existing, hand-made cards without any new ones being generated.\n" +
       "- Chance of a thought per turn: how likely (0 to 1) it is that an eligible, active character reveals a private thought on any given turn. Higher means more frequent reveals. (Reveals are already a little less likely during your own Do/Say actions, and a character's own core truth naturally takes a bit longer to shift than an ordinary mood, on a fixed pace behind the scenes.)\n" +
       "- Turns before the same character can think again: a cooldown, in turns, before that same character is eligible for another thought — keeps one character from dominating.\n" +
       "- Ease off during your own Do/Say actions: when true (default), a reveal is less likely to fire specifically on turns where you took a deliberate Do or Say action, so it doesn't compete for attention right when you've acted. Turns you didn't directly drive (Continue, Story) are unaffected either way.\n" +
@@ -872,10 +894,17 @@ function buildCodexInstruction(names, text) {
     const knownNote = mind && mind.core
       ? ` They've privately shown this about themselves: "${mind.core}" — let Personality and Background agree with it, not invent something that contradicts it.`
       : "";
-    return `Profile ${i + 1} — "${name}":${knownNote}\n【CARD】\n${body}\n【/CARD】`;
+    // the upfront classification is a heuristic guess, not a verified
+    // fact — it can't know every real-world place name, and something
+    // like "Manhattan" defaulting to a character template would ask
+    // for a Race and Strength Level, fields that make no sense for a
+    // city. Rather than force the wrong template, the model is told
+    // outright it can swap to whichever template actually fits.
+    const correctionNote = ` If "${name}" is actually a location, item, or faction rather than a character, use Location/Description/Key Locations/Historical Events/Significance, or Type/Description/Properties/Origin/Significance, or Type/Description/Significance instead of the fields below — whichever genuinely fits it.`;
+    return `Profile ${i + 1} — "${name}":${knownNote}${correctionNote}\n【CARD】\n${body}\n【/CARD】`;
   }).join("\n\n");
 
-  return `\n[Finish the story normally first — that's the priority. Then, on new lines after it, add ${names.length > 1 ? "these brief hidden profiles" : "a brief hidden profile"} wrapped between 【CARD】 and 【/CARD】, not part of the visible narrative:\n${blocks}\nKeep each field to a few words — this should take one or two lines total per profile, not paragraphs.]\n`;
+  return `\n[Finish the story normally first — that's the priority. Then, on new lines after it, add ${names.length > 1 ? "these brief hidden profiles" : "a brief hidden profile"} wrapped between 【CARD】 and 【/CARD】, not part of the visible narrative:\n${blocks}\nKeep each field to a few words — this should take one or two lines total per profile, not paragraphs. Use whatever the story has actually shown; where it hasn't shown much yet, fill in your best reasonable answer instead of leaving a field blank or vague — draw on general knowledge for anything real-world (an actual place, a well-known title, a common item), and a sensible, in-fiction guess for anything invented that the story just hasn't detailed yet.]\n`;
 }
 
 function codexLogTitle(type) {
