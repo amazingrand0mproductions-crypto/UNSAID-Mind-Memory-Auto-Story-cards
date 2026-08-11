@@ -121,7 +121,12 @@
 //    competing on its own rather than as the one name that matters
 //    (the same fix also prevents the identical abbreviation from
 //    being mistaken for a sentence-ending period when a reveal's want
-//    text is extracted). Recognizes when a shorter and longer
+//    text is extracted). Compass directions, day names, and month
+//    names are excluded outright — confirmed via Auto-Cards' own real
+//    source that these are a genuine, recurring false positive
+//    (capitalized constantly in ordinary narrative text, never a
+//    sensible subject on their own), not something this project had
+//    hit directly yet. Recognizes when a shorter and longer
 //    version of the same name refer to one entity ("Marcus" / "Marcus
 //    Cole") instead of doubling up, and never cards the player's own
 //    character — named manually, or, in Multiplayer, every character
@@ -162,7 +167,17 @@
 //    successful one does — once that's used up, Codex gives up on that
 //    name for good. Rather than let that happen silently and
 //    invisibly, the last exhausted attempt says so plainly and points
-//    at the config card's reset option.
+//    at the config card's reset option. A response that opens a card
+//    block but never closes it — cut off, whether the only thing
+//    attempted or dangling after other cards that did complete
+//    normally — isn't simply discarded: whatever field content exists
+//    is salvaged as a best-effort card when it lines up with a name
+//    actually requested, the same reasoning already applied to an
+//    unclosed reveal tag, and directly inspired by Auto-Cards
+//    treating a genuine attempt as worth keeping rather than thrown
+//    away outright. Matched positionally to the next expected name in
+//    sequence, not by trusting whatever the cut-off response itself
+//    says its own name is.
 //
 // A short summary of each tracked character's core truth, want, and
 // top relationship can optionally ride in the adventure's always-on
@@ -284,7 +299,19 @@ const CODEX_STOPWORDS = new Set([
   "Whoever", "Whenever", "Wherever", "Whichever", "Almost", "Enough",
   "Rather", "Quite", "Somehow", "Somewhat", "Anyway", "Anywhere",
   "Nowhere", "Somewhere", "Nobody", "Somebody", "Anybody", "Everybody",
-  "Nevertheless", "Nonetheless", "Otherwise", "Therefore", "Thus"
+  "Nevertheless", "Nonetheless", "Otherwise", "Therefore", "Thus",
+  // compass directions, days, and months — confirmed via Auto-Cards'
+  // own default ban list that these are a real, recurring false
+  // positive: capitalized constantly in narrative text, never a
+  // sensible subject for a card on their own
+  "North", "South", "East", "West", "Northeast", "Northwest",
+  "Southeast", "Southwest",
+  "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+  "Saturday",
+  "January", "February", "March", "April", "June", "July", "August",
+  "September", "October", "November", "December"
+  // "May" deliberately excluded — too common as the modal verb, and
+  // already unlikely to accumulate real mentions as the month alone
 ]);
 
 const CODEX_LOCATION_HINTS = /\b(city|state|street|avenue|canyon|terminal|park|building|tower|island|country|nation|kingdom|realm|district|region|planet|world|base|facility|academy|university|bridge|river|mountain|forest|desert|battleground|warzone|hall|tavern|inn|castle|fortress|temple|level|sector|wing|chamber|vault|bay|deck|outpost|colony|settlement|village|town|hamlet|station|harbor|wharf)\b/i;

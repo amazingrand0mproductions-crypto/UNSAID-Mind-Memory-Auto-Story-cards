@@ -30,27 +30,22 @@ const modifier = (text) => {
     // turned into an actual Story Card when it lines up with a name we
     // actually asked for.
     const blockPattern = /【CARD】([\s\S]*?)【\/CARD】/g;
-    const openTagPattern = /【CARD】/;
     const blockMatches = [...text.matchAll(blockPattern)];
     const expectedNames = state.unsaid.codex.pendingNames || [];
     const expectedTypes = state.unsaid.codex.pendingTypes || {};
     const succeededNames = new Set();
 
-    blockMatches.forEach((match, i) => {
-      const name = expectedNames[i];
-      // falls back to "character" rather than leaving this undefined —
-      // expectedNames and expectedTypes are always set together in
-      // Context.js, so this shouldn't normally diverge, but a card
-      // with an undefined type could look broken in AI Dungeon's own
-      // Story Card UI, and the fallback costs nothing to have in place
-      let type = expectedTypes[name] || "character";
-      if (!name) return; // more blocks than we actually requested — stripped below, not carded
-
+    // pulled out so it can be reused for both a properly closed block
+    // and a salvaged unclosed one below — same field-parsing, same
+    // type-correction, same card-creation logic either way
+    function tryBuildCard(blockContent, name, upfrontType) {
+      let type = upfrontType || "character";
       const fields = {};
-      match[1].split("\n").forEach(line => {
+      blockContent.split("\n").forEach(line => {
         const fieldMatch = line.match(/^\s*([A-Za-z ]+):\s*(.+)$/);
         if (fieldMatch) fields[fieldMatch[1].trim()] = fieldMatch[2].trim();
       });
+      if (!fields["Name"]) return false;
 
       // the upfront classification was a heuristic guess, not a fact —
       // it can't enumerate every real-world place name, and the
@@ -69,70 +64,93 @@ const modifier = (text) => {
         type = "faction"; // clearly not a character, no item-specific fields either — faction is the safer default of the two
       }
 
-      if (fields["Name"]) {
-        succeededNames.add(name);
-        // exact match here on purpose, unlike syncMindToCard's lookup:
-        // findCodexCandidates already excludes any name matching an
-        // existing card via isSameCardEntity, so by now "name" normally
-        // has no card at all. This writes to entry — the card's actual
-        // lore — not just notes, so loosening the match here risks
-        // overwriting a real, hand-authored card's content with a
-        // generic AI profile if a partial match ever did occur, which
-        // would be worse than just making a separate new card.
-        let card = storyCards.find(c => c.title.toLowerCase() === name.toLowerCase());
-        if (!card) {
-          card = createOrFindCard(name.toLowerCase(), " ", type);
-        }
-        card.title = name;
-        card.keys = name.toLowerCase();
-        card.type = type;
-
-        const order = CARD_TEMPLATES[type] || CHARACTER_CARD_FIELDS;
-        let builtEntry = order
-          .filter(f => fields[f])
-          .map(f => `${f}: ${fields[f]}`)
-          .join("\n");
-        // guards against an unusually long AI-generated profile overflowing
-        // the Story Card entry field
-        if (builtEntry.length > MAX_CARD_ENTRY_LENGTH) {
-          builtEntry = builtEntry.slice(0, MAX_CARD_ENTRY_LENGTH - 3) + "...";
-        }
-        card.entry = builtEntry;
-
-        logCodexCard(name, type, state.unsaid.codex.mentionCounts[name] || 0);
-        forgetMentionTracking(name); // no longer needed once the card exists
-
-        // newly discovered characters automatically join the private-thoughts cast
-        if (type === "character") {
-          const configCard = ensureConfigCard();
-          if (!configCard.description.includes(name)) {
-            configCard.description += `\n${name}`;
-          }
-          // if this character already had tracked feelings before their
-          // card existed, show them on the card right away
-          syncMindToCard(name, cfg.allowCoreShift, cfg.jsonNotes);
-        }
+      succeededNames.add(name);
+      // exact match here on purpose, unlike syncMindToCard's lookup:
+      // findCodexCandidates already excludes any name matching an
+      // existing card via isSameCardEntity, so by now "name" normally
+      // has no card at all. This writes to entry — the card's actual
+      // lore — not just notes, so loosening the match here risks
+      // overwriting a real, hand-authored card's content with a
+      // generic AI profile if a partial match ever did occur, which
+      // would be worse than just making a separate new card.
+      let card = storyCards.find(c => c.title.toLowerCase() === name.toLowerCase());
+      if (!card) {
+        card = createOrFindCard(name.toLowerCase(), " ", type);
       }
+      card.title = name;
+      card.keys = name.toLowerCase();
+      card.type = type;
+
+      const order = CARD_TEMPLATES[type] || CHARACTER_CARD_FIELDS;
+      let builtEntry = order
+        .filter(f => fields[f])
+        .map(f => `${f}: ${fields[f]}`)
+        .join("\n");
+      // guards against an unusually long AI-generated profile overflowing
+      // the Story Card entry field
+      if (builtEntry.length > MAX_CARD_ENTRY_LENGTH) {
+        builtEntry = builtEntry.slice(0, MAX_CARD_ENTRY_LENGTH - 3) + "...";
+      }
+      card.entry = builtEntry;
+
+      logCodexCard(name, type, state.unsaid.codex.mentionCounts[name] || 0);
+      forgetMentionTracking(name); // no longer needed once the card exists
+
+      // newly discovered characters automatically join the private-thoughts cast
+      if (type === "character") {
+        const configCard = ensureConfigCard();
+        if (!configCard.description.includes(name)) {
+          configCard.description += `\n${name}`;
+        }
+        // if this character already had tracked feelings before their
+        // card existed, show them on the card right away
+        syncMindToCard(name, cfg.allowCoreShift, cfg.jsonNotes);
+      }
+      return true;
+    }
+
+    blockMatches.forEach((match, i) => {
+      const name = expectedNames[i];
+      if (!name) return; // more blocks than we actually requested — stripped below, not carded
+      tryBuildCard(match[1], name, expectedTypes[name]);
     });
+
+    // strip every matched (closed) block regardless of whether it lined
+    // up with something we expected
+    if (blockMatches.length > 0) {
+      text = text.replace(blockPattern, "").replace(/\n{3,}/g, "\n\n");
+    }
+    // a remaining, unclosed 【CARD】 tag is checked for regardless of how
+    // many closed blocks came before it — a response can contain one
+    // complete card followed by a second one that got cut off, and the
+    // old version of this check only ever looked for an unclosed tag
+    // when there were zero closed blocks, missing that dangling case
+    // entirely. Rather than only strip it, first try to salvage it:
+    // the model attempted this one too, it just didn't finish — the
+    // same reasoning already applied to reveals' unclosed-tag handling,
+    // and directly inspired by how Auto-Cards treats a genuine attempt
+    // as worth keeping rather than discarding outright. Matched
+    // positionally to whichever expected name would come next in
+    // sequence, the same trust-our-own-tracking approach used for
+    // closed blocks, since the "Name" field in a cut-off response can
+    // itself be incomplete.
+    const remainingOpenMatch = text.match(/【CARD】([\s\S]*)$/);
+    if (remainingOpenMatch) {
+      const nextName = expectedNames[blockMatches.length];
+      if (nextName && !succeededNames.has(nextName)) {
+        tryBuildCard(remainingOpenMatch[1], nextName, expectedTypes[nextName]);
+      }
+      // strip regardless of whether the salvage attempt succeeded —
+      // an unfinished block, salvaged or not, doesn't belong in the
+      // visible story either way
+      text = text.replace(/【CARD】[\s\S]*$/, "").replace(/\n{3,}/g, "\n\n").trimEnd();
+    }
 
     if (succeededNames.size > 0) {
       const names = [...succeededNames];
       state.message = names.length === 1
         ? `📇 Codex created a ${expectedTypes[names[0]]} card for ${names[0]}.`
         : `📇 Codex created ${names.length} cards: ${names.join(", ")}.`;
-    }
-
-    // strip every matched (closed) block regardless of whether it lined
-    // up with something we expected
-    if (blockMatches.length > 0) {
-      text = text.replace(blockPattern, "").replace(/\n{3,}/g, "\n\n");
-    } else if (openTagPattern.test(text)) {
-      // an opening tag with no closing tag means the response got cut off
-      // mid-card — without this, the raw, unfinished markup stays in the
-      // story forever (exactly what an unclosed 【CARD】 in the visible
-      // narrative looks like). Cut from the opening tag to the end rather
-      // than leave a broken fragment visible.
-      text = text.replace(/【CARD】[\s\S]*$/, "").replace(/\n{3,}/g, "\n\n").trimEnd();
     }
 
     // any requested name that didn't end up with a successful block —
