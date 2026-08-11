@@ -165,6 +165,40 @@ const modifier = (text) => {
       if (succeededNames.has(name)) return false;
       return (state.unsaid.codex.attempts[name] || 0) >= cfg.codexMaxAttempts;
     });
+
+    // exhausting even one name this way already takes attempts times
+    // cooldown turns at minimum (25+ at the defaults) before its own
+    // message fires — if several different names in a row all fail,
+    // that's 75+ turns before anything explains what's happening. A
+    // pattern spanning multiple different names looks systemic (a
+    // model not complying with the format at all, or something else
+    // broader) in a way a single name's failure doesn't, so it's
+    // surfaced much earlier and separately, without waiting on any
+    // individual name's own retry budget to run out first. A plain
+    // array, not a Set — state gets JSON-serialized between turns by
+    // the platform, and a Set doesn't survive that round-trip (it
+    // silently becomes {}), which would have quietly lost this data
+    // every single turn.
+    if (!state.unsaid.codex.consecutiveFailedNames) state.unsaid.codex.consecutiveFailedNames = [];
+    if (expectedNames.length > 0 && succeededNames.size === 0) {
+      expectedNames.forEach(n => {
+        if (!state.unsaid.codex.consecutiveFailedNames.includes(n)) {
+          state.unsaid.codex.consecutiveFailedNames.push(n);
+        }
+      });
+      // capped so a worst-case environment where nothing ever succeeds
+      // can't grow this without bound over a very long story
+      if (state.unsaid.codex.consecutiveFailedNames.length > 10) {
+        state.unsaid.codex.consecutiveFailedNames = state.unsaid.codex.consecutiveFailedNames.slice(-10);
+      }
+    } else if (succeededNames.size > 0) {
+      state.unsaid.codex.consecutiveFailedNames = [];
+    }
+    const strugglingCount = state.unsaid.codex.consecutiveFailedNames.length;
+    if (strugglingCount >= 3 && exhausted.length === 0) {
+      state.message = `📇 Codex has attempted ${strugglingCount} different names in a row without a single card succeeding — this pattern usually means something broader than any one name, not bad luck on a few names specifically. Check "/unsaid status" and, if you're on a model prone to it, the cache-efficient warning card.`;
+    }
+
     if (exhausted.length > 0) {
       state.message = exhausted.length === 1
         ? `📇 Codex gave up on "${exhausted[0]}" after ${state.unsaid.codex.attempts[exhausted[0]]} attempts without a usable response. Use "Reset Codex tracking now" in the config card to let it try again.`

@@ -177,7 +177,15 @@
 //    treating a genuine attempt as worth keeping rather than thrown
 //    away outright. Matched positionally to the next expected name in
 //    sequence, not by trusting whatever the cut-off response itself
-//    says its own name is.
+//    says its own name is. Exhausting even one name this way already
+//    takes attempts × cooldown turns at minimum before its own message
+//    fires — if several different names in a row all fail, that's
+//    dozens of turns before anything explains what's happening. A
+//    failure pattern spanning multiple different names looks systemic
+//    in a way any single name's own failure doesn't, so it's tracked
+//    and surfaced separately, well before any individual name's own
+//    retry budget would run out — also visible directly in
+//    "/unsaid status" as its own line, not just as a one-time popup.
 //
 // A short summary of each tracked character's core truth, want, and
 // top relationship can optionally ride in the adventure's always-on
@@ -430,15 +438,16 @@ function initUnsaid() {
       turn: 0,
       pending: null,
       forcedPeek: null,
-      codex: { mentionCounts: {}, attempts: {}, pendingNames: [], pendingTypes: {} }
+      codex: { mentionCounts: {}, attempts: {}, pendingNames: [], pendingTypes: {}, consecutiveFailedNames: [] }
     };
   }
   if (!state.unsaid.codex) {
-    state.unsaid.codex = { mentionCounts: {}, attempts: {}, pendingNames: [], pendingTypes: {} };
+    state.unsaid.codex = { mentionCounts: {}, attempts: {}, pendingNames: [], pendingTypes: {}, consecutiveFailedNames: [] };
   }
   if (!state.unsaid.codex.mentionCounts) state.unsaid.codex.mentionCounts = {};
   if (!state.unsaid.codex.pendingNames) state.unsaid.codex.pendingNames = [];
   if (!state.unsaid.codex.pendingTypes) state.unsaid.codex.pendingTypes = {};
+  if (!state.unsaid.codex.consecutiveFailedNames) state.unsaid.codex.consecutiveFailedNames = [];
   ensureConfigCard();
 }
 
@@ -979,6 +988,10 @@ function buildStatusReport(cfg) {
   }
   const turnsSinceCodex = state.unsaid.turn - (state.unsaid.codex.lastTriggerTurn || 0);
   lines.push(`  ${turnsSinceCodex}/${cfg.codexCooldown} turns since Codex last triggered`);
+  const strugglingCount = (state.unsaid.codex.consecutiveFailedNames || []).length;
+  if (strugglingCount > 0) {
+    lines.push(`  ${strugglingCount} different name(s) in a row with no successful card yet${strugglingCount >= 3 ? " — looks systemic, not just bad luck on a few names" : ""}`);
+  }
 
   lines.push(`\nCast (${cfg.cast.length}): ${cfg.cast.join(", ") || "empty"}`);
 
