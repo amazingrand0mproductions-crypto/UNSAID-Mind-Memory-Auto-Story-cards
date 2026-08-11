@@ -42,4 +42,5 @@ const modifier = (text) => {
     return { text: originalText };
   }
 };
-modifier(text);
+
+modifier(text)

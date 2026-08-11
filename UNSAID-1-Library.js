@@ -573,6 +573,10 @@ function buildStatusReport(cfg) {
   if (strugglingCount > 0) {
     lines.push(`  ${strugglingCount} different name(s) in a row with no successful card yet${strugglingCount >= 3 ? " — looks systemic, not just bad luck on a few names" : ""}`);
   }
+  const revealMisses = state.unsaid.consecutiveRevealMisses || 0;
+  if (revealMisses > 0) {
+    lines.push(`\nReveal requests: ${revealMisses} in a row produced nothing usable${revealMisses >= 5 ? " — may indicate a model compliance issue, not a specific character" : ""}`);
+  }
 
   lines.push(`\nCast (${cfg.cast.length}): ${cfg.cast.join(", ") || "empty"}`);
 

@@ -230,6 +230,12 @@ const modifier = (text) => {
             ? `💭 ${name} is thinking something they're not saying...`
             : `💭 ${name} is secretly feeling ${feeling} — check their Story Card for the rest.`;
         }
+        state.unsaid.consecutiveRevealMisses = 0;
+      } else {
+        state.unsaid.consecutiveRevealMisses = (state.unsaid.consecutiveRevealMisses || 0) + 1;
+        if (state.unsaid.consecutiveRevealMisses >= 5) {
+          state.message = `💭 The last ${state.unsaid.consecutiveRevealMisses} reveal requests in a row produced nothing usable at all — not even a malformed attempt. If this keeps happening, the model may be struggling with the format itself rather than any specific character. Check "/unsaid status," and consider lowering "Chance of a thought per turn" temporarily.`;
+        }
       }
       state.unsaid.pending = null;
     }
@@ -241,10 +247,15 @@ const modifier = (text) => {
     syncCoreMemory(cfg.memoryMaxEntries, cfg.memorySyncEnabled, cfg.memoryPercent);
     syncFrontMemoryHint(cfg.subtleHints);
 
+    if (!text || !text.trim()) {
+      text = "*(A quiet moment passes.)*";
+    }
+
     return { text };
   } catch (e) {
     if (typeof log === "function") log("UNSAID Output error: " + (e && e.message));
     return { text: originalText };
   }
 };
-modifier(text);
+
+modifier(text)
