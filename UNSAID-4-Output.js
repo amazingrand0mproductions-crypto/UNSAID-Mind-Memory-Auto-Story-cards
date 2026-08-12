@@ -13,6 +13,7 @@ const modifier = (text) => {
     const expectedNames = state.unsaid.codex.pendingNames || [];
     const expectedTypes = state.unsaid.codex.pendingTypes || {};
     const succeededNames = new Set();
+    const cardWasNew = {};
 
     function tryBuildCard(blockContent, name, upfrontType) {
       let type = upfrontType || "character";
@@ -30,13 +31,15 @@ const modifier = (text) => {
       }
 
       succeededNames.add(name);
-      let card = storyCards.find(c => c.title.toLowerCase() === name.toLowerCase());
-      if (!card) {
+      let card = storyCards.find(c => c.title && isSameCardEntity(c.title, name));
+      const isNewCard = !card;
+      if (isNewCard) {
         card = createOrFindCard(name.toLowerCase(), " ", type);
+        card.title = name;
+        card.keys = name.toLowerCase();
       }
-      card.title = name;
-      card.keys = name.toLowerCase();
-      card.type = type;
+      card.type = platformType(type);
+      cardWasNew[name] = isNewCard;
 
       const order = CARD_TEMPLATES[type] || CHARACTER_CARD_FIELDS;
       let builtEntry = order
@@ -46,7 +49,12 @@ const modifier = (text) => {
       if (builtEntry.length > MAX_CARD_ENTRY_LENGTH) {
         builtEntry = builtEntry.slice(0, MAX_CARD_ENTRY_LENGTH - 3) + "...";
       }
-      card.entry = builtEntry;
+      // Never let a forced or automatic refresh silently overwrite an existing card's own
+      // content — only fill the entry if the card is brand new or was already blank. A
+      // hand-authored card (or one Codex already built out) keeps what it has.
+      if (isNewCard || !card.entry || !card.entry.trim()) {
+        card.entry = builtEntry;
+      }
 
       logCodexCard(name, type, state.unsaid.codex.mentionCounts[name] || 0);
       forgetMentionTracking(name);
@@ -82,9 +90,21 @@ const modifier = (text) => {
     const messageParts = [];
     if (succeededNames.size > 0) {
       const names = [...succeededNames];
-      messageParts.push(names.length === 1
-        ? `📇 Codex created a ${expectedTypes[names[0]]} card for ${names[0]}.`
-        : `📇 Codex created ${names.length} cards: ${names.join(", ")}.`);
+      const allNew = names.every(n => cardWasNew[n]);
+      const allExisting = names.every(n => !cardWasNew[n]);
+      if (names.length === 1) {
+        messageParts.push(cardWasNew[names[0]]
+          ? `📇 Codex created a ${expectedTypes[names[0]]} card for ${names[0]}.`
+          : `📇 Codex synced notes onto ${names[0]}'s existing Story Card (their written entry was left untouched).`);
+      } else if (allNew) {
+        messageParts.push(`📇 Codex created ${names.length} cards: ${names.join(", ")}.`);
+      } else if (allExisting) {
+        messageParts.push(`📇 Codex synced notes onto ${names.length} existing Story Cards: ${names.join(", ")} (entries left untouched).`);
+      } else {
+        const created = names.filter(n => cardWasNew[n]);
+        const existing = names.filter(n => !cardWasNew[n]);
+        messageParts.push(`📇 Codex created ${created.length} card(s) (${created.join(", ")}) and synced notes onto ${existing.length} existing card(s) (${existing.join(", ")}).`);
+      }
     }
 
     const exhausted = expectedNames.filter(name => {
@@ -183,6 +203,8 @@ const modifier = (text) => {
         if (!state.unsaid.minds[name]) state.unsaid.minds[name] = createMind();
         const mind = state.unsaid.minds[name];
         const previousFeeling = mind.feeling;
+        const normalizeThought = (s) => (s || "").trim().toLowerCase().replace(/\s+/g, " ");
+        const isStaleRepeat = !!mind.lastThoughtText && normalizeThought(thought) === normalizeThought(mind.lastThoughtText);
         let justShifted = false;
         if (isCoreShift && cfg.allowCoreShift && thought && thought !== mind.core) {
           if (!mind.coreHistory) mind.coreHistory = [];
@@ -199,12 +221,14 @@ const modifier = (text) => {
         if (wantSentence) mind.want = wantSentence;
         mind.lastThoughtText = thought;
         mind.lastTurn = state.unsaid.turn;
-        mind.revealCount = (mind.revealCount || 0) + 1;
-        if (!mind.feelingHistory) mind.feelingHistory = [];
-        pushCapped(mind.feelingHistory, feeling, FEELING_HISTORY_LIMIT);
+        if (!isStaleRepeat) {
+          mind.revealCount = (mind.revealCount || 0) + 1;
+          if (!mind.feelingHistory) mind.feelingHistory = [];
+          pushCapped(mind.feelingHistory, feeling, FEELING_HISTORY_LIMIT);
+        }
 
         let tensionJustCrossed = false;
-        if (!justShifted) {
+        if (!justShifted && !isStaleRepeat) {
           if (typeof mind.tensionLevel !== "number") mind.tensionLevel = 0;
           const wasBelowThreshold = mind.tensionLevel < TENSION_THRESHOLD;
           const tensionCap = TENSION_THRESHOLD * DRASTIC_TENSION_MULTIPLIER;
@@ -219,12 +243,16 @@ const modifier = (text) => {
         if (about) {
           recordRelation(name, about, feeling);
         }
-        syncMindToCard(name, cfg.allowCoreShift, cfg.jsonNotes);
+        const synced = syncMindToCard(name, cfg.allowCoreShift, cfg.jsonNotes);
 
-        if (isCoreShift && cfg.allowCoreShift) {
+        if (!synced) {
+          state.message = `⚠️ ${name} had a private thought, but no matching Story Card was found to save it on — check "/unsaid status" and make sure ${name} has a Story Card whose title matches their cast name.`;
+        } else if (isCoreShift && cfg.allowCoreShift) {
           state.message = `🌗 ${name} has been fundamentally changed — check their Story Card.`;
         } else if (tensionJustCrossed) {
           state.message = `⚡ ${name}'s sense of self is starting to waver...`;
+        } else if (isStaleRepeat) {
+          state.message = `💭 ${name}'s mind circled back to the same thought — nothing new this time.`;
         } else {
           state.message = cfg.showThoughtsInStory
             ? `💭 ${name} is thinking something they're not saying...`

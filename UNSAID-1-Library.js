@@ -71,6 +71,10 @@ const CODEX_STOPWORDS = new Set([
   "Rather", "Quite", "Somehow", "Somewhat", "Anyway", "Anywhere",
   "Nowhere", "Somewhere", "Nobody", "Somebody", "Anybody", "Everybody",
   "Nevertheless", "Nonetheless", "Otherwise", "Therefore", "Thus",
+  "For", "Or", "Can", "Could", "Should", "Would", "Must", "Shall", "Might",
+  "Do", "Does", "Did", "Is", "Was", "Are", "Were", "Am", "Be", "Been", "Being",
+  "Have", "Has", "Had", "Let", "Given", "Despite", "Regarding", "Considering",
+  "Except", "Besides", "Unlike",
   "North", "South", "East", "West", "Northeast", "Northwest",
   "Southeast", "Southwest",
   "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
@@ -173,6 +177,7 @@ function initUnsaid() {
   if (!state.unsaid.codex.pendingNames) state.unsaid.codex.pendingNames = [];
   if (!state.unsaid.codex.pendingTypes) state.unsaid.codex.pendingTypes = {};
   if (!state.unsaid.codex.consecutiveFailedNames) state.unsaid.codex.consecutiveFailedNames = [];
+  if (typeof state.unsaid.lastActionCount !== "number") state.unsaid.lastActionCount = -1;
   ensureConfigCard();
 }
 
@@ -223,6 +228,11 @@ function ensureConfigCard() {
       "> Characters remembered in long-term memory: 8\n" +
       "> Memory summary size (% of context): 10";
     card.description =
+      "Commands (type as an action):\n" +
+      "- /unsaid status — writes a live status report to a separate \"UNSAID — Status\" card. Not sent to the AI.\n" +
+      "- /peek <character name> — force a private thought from that character right now.\n" +
+      "- /peek <character name> core — force a check for whether this moment has changed that character's core truth.\n" +
+      "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping the mention count and cooldown.\n\n" +
       "UNSAID Config — what each setting above does:\n" +
       "- Enable UNSAID: master switch for the whole script (private thoughts and Codex together). False turns everything off.\n" +
       "- Enable Codex: turns automatic Story Card generation on or off by itself. Turn this off to keep private thoughts working normally on your existing, hand-made cards without any new ones being generated.\n" +
@@ -252,6 +262,15 @@ function ensureConfigCard() {
 
 function readUnsaidConfig() {
   const card = ensureConfigCard();
+  if (!card.description.includes("Commands (type as an action):")) {
+    card.description =
+      "Commands (type as an action):\n" +
+      "- /unsaid status — writes a live status report to a separate \"UNSAID — Status\" card. Not sent to the AI.\n" +
+      "- /peek <character name> — force a private thought from that character right now.\n" +
+      "- /peek <character name> core — force a check for whether this moment has changed that character's core truth.\n" +
+      "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping the mention count and cooldown.\n\n" +
+      card.description;
+  }
   const cfg = { ...UNSAID_DEFAULTS };
 
   const enabledMatch = card.entry.match(/Enable UNSAID:\s*(true|false)/i);
@@ -351,9 +370,15 @@ function readUnsaidConfig() {
   let adoptedThisPass = 0;
   storyCards.forEach(c => {
     if (adoptedThisPass >= 20) return;
-    if (c.type !== "character" || !c.title) return;
+    if (!c.title) return;
+    // Opt-out rather than opt-in: only skip cards whose type clearly says they're NOT a
+    // character (location/faction/item), plus UNSAID's own "Class"-typed admin cards. Anything
+    // else — "Character" or any other/custom type a card might actually be stored with — is
+    // treated as a character candidate, so this doesn't depend on guessing the exact type string.
+    if (isCardOfKind(c, "location") || isCardOfKind(c, "faction") || isCardOfKind(c, "item") || isCardOfKind(c, "class")) return;
     if (c.title === "UNSAID Config") return;
-    if (knownLower.includes(c.title.toLowerCase())) return;
+    if (cfg.playerName && isSameCardEntity(c.title, cfg.playerName)) return;
+    if (cfg.cast.some(existing => isSameCardEntity(c.title, existing))) return;
     cfg.cast.push(c.title);
     knownLower.push(c.title.toLowerCase());
     adopted = true;
@@ -472,6 +497,14 @@ function isSameCardEntity(cardTitle, candidateName) {
   return shorter.length > 0 && shorter.every(w => longer.includes(w));
 }
 
+const CARD_TYPE_DISPLAY = { character: "Character", location: "Location", item: "Item", faction: "Faction" };
+function platformType(kind) {
+  return CARD_TYPE_DISPLAY[kind] || kind;
+}
+function isCardOfKind(card, kind) {
+  return !!card && typeof card.type === "string" && card.type.toLowerCase() === kind.toLowerCase();
+}
+
 function excludedNames(cfg) {
   const names = [];
   if (cfg.playerName) names.push(cfg.playerName);
@@ -580,6 +613,20 @@ function buildStatusReport(cfg) {
 
   lines.push(`\nCast (${cfg.cast.length}): ${cfg.cast.join(", ") || "empty"}`);
 
+  if (cfg.cast.length > 0) {
+    lines.push(`\nCast → Story Card resolution (what each name actually matches right now):`);
+    cfg.cast.forEach(name => {
+      const matches = storyCards.filter(c => c.title && isSameCardEntity(c.title, name));
+      if (matches.length === 0) {
+        lines.push(`  ${name} → no matching Story Card found — thoughts have nowhere to be saved`);
+      } else if (matches.length === 1) {
+        lines.push(`  ${name} → "${matches[0].title}" (type: "${matches[0].type || ""}")`);
+      } else {
+        lines.push(`  ${name} → ${matches.length} cards match! Using the first: "${matches[0].title}" (type: "${matches[0].type || ""}") — others: ${matches.slice(1).map(c => `"${c.title}"`).join(", ")}`);
+      }
+    });
+  }
+
   return lines.join("\n");
 }
 
@@ -632,10 +679,14 @@ function recordRelation(name, other, feeling) {
 
 function syncMindToCard(name, allowCoreShift, useJson) {
   const mind = state.unsaid.minds[name];
-  if (!mind) return;
+  if (!mind) return false;
 
-  const card = storyCards.find(c => c.type === "character" && isSameCardEntity(c.title, name));
-  if (!card) return;
+  // Match purely by name. Earlier versions also required card.type to equal "character", but
+  // that made this silently fail whenever a card's stored type didn't come back exactly as
+  // expected — the reveal would still report success even though nothing was written. A name
+  // that's already an active, tracked cast member doesn't need re-verifying by type here.
+  const card = storyCards.find(c => c.title && isSameCardEntity(c.title, name));
+  if (!card) return false;
 
   const stabilityNote = typeof mind.coreSetTurn === "number" && state.unsaid.turn > mind.coreSetTurn
     ? ` (steady for ${state.unsaid.turn - mind.coreSetTurn} turn${state.unsaid.turn - mind.coreSetTurn === 1 ? "" : "s"})`
@@ -671,7 +722,7 @@ function syncMindToCard(name, allowCoreShift, useJson) {
     };
     const base = (card.description || "").split(MIND_NOTES_MARKER)[0].replace(/\s+$/, "");
     card.description = `${base}\n\n${MIND_NOTES_MARKER}\n${JSON.stringify(jsonBody, null, 2)}`.trim();
-    return;
+    return true;
   }
 
   const sections = [];
@@ -697,11 +748,12 @@ function syncMindToCard(name, allowCoreShift, useJson) {
   if (mind.revealCount) {
     sections.push(`${mind.revealCount} private moment${mind.revealCount === 1 ? "" : "s"} recorded so far.`);
   }
-  if (sections.length === 0) return;
+  if (sections.length === 0) return false;
   const body = sections.join("\n\n");
 
   const base = (card.description || "").split(MIND_NOTES_MARKER)[0].replace(/\s+$/, "");
   card.description = `${base}\n\n${MIND_NOTES_MARKER}\n${body}`.trim();
+  return true;
 }
 
 function splitThoughtSentences(thought) {
@@ -838,6 +890,19 @@ function getLastActionType() {
     return history[history.length - 1].type || null;
   }
   return null;
+}
+
+// AI Dungeon's info.actionCount only advances on a genuine new action — not on a retry or
+// regenerated output for the same action — so it's a reliable signal for "has the story
+// actually moved forward since we last spent turn-based budget (cooldowns, Codex attempts)?"
+function isNewStoryTurn() {
+  if (typeof info === "undefined" || !info || !Number.isInteger(info.actionCount)) {
+    return true;
+  }
+  const current = Math.abs(info.actionCount);
+  const isNew = state.unsaid.lastActionCount !== current;
+  state.unsaid.lastActionCount = current;
+  return isNew;
 }
 
 const ESTIMATED_CHARS_PER_TURN = 900;

@@ -15,7 +15,21 @@ const modifier = (text) => {
     state.unsaid.forcedPeek = null;
     state.unsaid.forcedPeekCore = null;
 
+    const forcedCodex = state.unsaid.forcedCodex;
+    state.unsaid.forcedCodex = null;
+
     if (!cfg.enabled) {
+      state.unsaid.pending = null;
+      state.unsaid.codex.pendingNames = [];
+      return { text };
+    }
+
+    // A retry or regenerated output re-runs this hook for the same action. If nothing about
+    // the story has actually advanced and no explicit command is pending, don't roll fresh
+    // reveal odds or spend Codex attempts/cooldown again — that would let repeated retries
+    // silently drain turn-based budget faster than real story progress.
+    const storyAdvanced = isNewStoryTurn();
+    if (!storyAdvanced && !forcedPeek && !forcedCodex) {
       state.unsaid.pending = null;
       state.unsaid.codex.pendingNames = [];
       return { text };
@@ -50,6 +64,21 @@ const modifier = (text) => {
         return { text: text + fitted };
       }
       state.message = `👁️ Not enough room left in context to peek at ${forcedPeek} this turn — try again once the story frees up some space.`;
+    }
+
+    if (forcedCodex) {
+      const type = classifyCodexEntry(forcedCodex, text);
+      const instruction = buildCodexInstruction([forcedCodex], text);
+      const fitted = fitInstructionToBudget(text, instruction);
+      if (fitted) {
+        state.unsaid.codex.attempts[forcedCodex] = (state.unsaid.codex.attempts[forcedCodex] || 0) + 1;
+        state.unsaid.codex.pendingNames = [forcedCodex];
+        state.unsaid.codex.pendingTypes = { [forcedCodex]: type };
+        state.unsaid.codex.lastTriggerTurn = state.unsaid.turn;
+        state.unsaid.pending = null;
+        return { text: text + fitted };
+      }
+      state.message = `📇 Not enough room left in context to card ${forcedCodex} this turn — try again once the story frees up some space.`;
     }
 
     const sinceLastCodex = state.unsaid.turn - (state.unsaid.codex.lastTriggerTurn || 0);

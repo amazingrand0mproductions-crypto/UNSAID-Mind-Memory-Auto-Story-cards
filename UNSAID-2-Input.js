@@ -36,6 +36,14 @@ const modifier = (text) => {
       return { text: "(A quiet moment passes.)" };
     }
 
+    const cardMatch = text.match(/\/card\s+([A-Za-z][\w\s]*?)[\s"'.!?]*$/i);
+    if (cardMatch) {
+      const name = cardMatch[1].trim().slice(0, 60);
+      state.unsaid.forcedCodex = name;
+      state.message = `📇 Writing a Story Card for ${name}...`;
+      return { text: "(A quiet moment passes.)" };
+    }
+
     return { text };
   } catch (e) {
     if (typeof log === "function") log("UNSAID Input error: " + (e && e.message));
