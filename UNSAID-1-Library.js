@@ -390,6 +390,23 @@ function readUnsaidConfig() {
     card.description += "\n" + newlyAdopted.join("\n");
   }
 
+  // A player-character name set AFTER auto-adopt already ran (the normal real-world order —
+  // the config card starts with a blank player field until someone fills it in) would
+  // otherwise stay stuck in the cast forever, since the exclusion above only stops *future*
+  // adoptions. Actively evict it here too, and rewrite the persisted list so it doesn't
+  // silently reappear on the next read.
+  if (cfg.playerName) {
+    const beforeCount = cfg.cast.length;
+    cfg.cast = cfg.cast.filter(n => !isSameCardEntity(n, cfg.playerName));
+    if (cfg.cast.length !== beforeCount) {
+      const markerIdx2 = card.description.indexOf(CAST_LIST_MARKER);
+      if (markerIdx2 !== -1) {
+        const head = card.description.slice(0, markerIdx2 + CAST_LIST_MARKER.length);
+        card.description = `${head}\n${cfg.cast.join("\n")}`;
+      }
+    }
+  }
+
   card.entry =
     "-- General --\n" +
     `> Enable UNSAID: ${cfg.enabled}\n` +
