@@ -171,6 +171,25 @@ const modifier = (text) => {
             matchedPattern = anyBracketPattern;
             thought = anyMatch[1].trim().replace(/^feeling\s+/i, "");
             usedFallback = true;
+          } else {
+            // The model can sometimes produce the reveal in the exact expected shape but
+            // drop the enclosing 《》 brackets entirely — confirmed directly from a real
+            // transcript where this leaked straight into the visible story, completely
+            // bypassing every bracket-based check above. Catch it at a paragraph boundary,
+            // requiring the exact pending name so this can't misfire on ordinary prose.
+            const barePattern = new RegExp(
+              `(?<=^|\\n)\\s*${escapeForRegex(name)},\\s*([a-zA-Z]+)(?:,\\s*(about\\s+[^:\\n]+|core-shift))?:\\s*([^\\n]+)`,
+              "i"
+            );
+            const bareMatch = text.match(barePattern);
+            if (bareMatch) {
+              matchedPattern = new RegExp(escapeForRegex(bareMatch[0]));
+              feeling = bareMatch[1].trim().toLowerCase();
+              if (feeling === "feeling" || feeling === "emotion" || feeling === "thought") feeling = null;
+              modifier2 = bareMatch[2] ? bareMatch[2].trim() : null;
+              thought = bareMatch[3].trim();
+              usedFallback = true;
+            }
           }
         }
       }

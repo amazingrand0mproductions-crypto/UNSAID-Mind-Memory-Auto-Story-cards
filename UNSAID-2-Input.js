@@ -24,8 +24,8 @@ const modifier = (text) => {
       return { text: "(A quiet moment passes.)" };
     }
 
-    const peekCoreMatch = text.match(/\/peek\s+([A-Za-z][\w\s]*?)\s+core\b/i);
-    const peekMatch = peekCoreMatch || text.match(/\/peek\s+([A-Za-z][\w\s]*?)[\s"'.!?]*$/i);
+    const peekCoreMatch = text.match(/\/pe(?:e|a)k\s+([A-Za-z][\w\s]*?)\s+core\b/i);
+    const peekMatch = peekCoreMatch || text.match(/\/pe(?:e|a)k\s+([A-Za-z][\w\s]*?)[\s"'.!?]*$/i);
     if (peekMatch) {
       const name = peekMatch[1].trim().slice(0, 60);
       state.unsaid.forcedPeek = name;

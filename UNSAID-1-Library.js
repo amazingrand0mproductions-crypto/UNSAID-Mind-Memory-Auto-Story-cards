@@ -421,7 +421,7 @@ function readUnsaidConfig() {
 function stripConfigNoise(text) {
   let cleaned = text;
   storyCards
-    .filter(c => c.type === "Class" && c.title && c.title.indexOf("UNSAID") === 0)
+    .filter(c => isCardOfKind(c, "class") && c.title && c.title.indexOf("UNSAID") === 0)
     .forEach(card => {
       if (card.entry) cleaned = cleaned.split(card.entry).join("");
       if (card.description) cleaned = cleaned.split(card.description).join("");
@@ -555,7 +555,9 @@ function buildCodexInstruction(names, text) {
     const knownNote = mind && mind.core
       ? ` They've privately shown this about themselves: "${mind.core}" — let Personality and Background agree with it, not invent something that contradicts it.`
       : "";
-    const correctionNote = ` If "${name}" is actually a location, item, or faction rather than a character, use Location/Description/Key Locations/Historical Events/Significance, or Type/Description/Properties/Origin/Significance, or Type/Description/Significance instead of the fields below — whichever genuinely fits it.`;
+    const correctionNote = type === "character"
+      ? ` If "${name}" is actually a location, item, or faction rather than a character, use Location/Description/Key Locations/Historical Events/Significance, or Type/Description/Properties/Origin/Significance, or Type/Description/Significance instead of the fields below — whichever genuinely fits it.`
+      : "";
     return `Profile ${i + 1} — "${name}":${knownNote}${correctionNote}\n【CARD】\n${body}\n【/CARD】`;
   }).join("\n\n");
 
@@ -823,7 +825,7 @@ function buildCoreCheckInstruction(chosen, mind) {
       ? " Their feelings have been genuinely unsettled for a while now — this may well be the moment."
       : " Their feelings have been fairly steady lately, for what that's worth.")
     : "";
-  return `\n[Consider whether recent events have genuinely, permanently changed how ${chosen} sees themselves — not just a passing mood.${coreNote}${tensionNote} If yes, reveal it as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" (replace [one-word-emotion] with an actual word, not the literal placeholder) (2 italicized sentences). If nothing that significant has happened, don't force it — continue the story normally with no reveal at all.]\n`;
+  return `\n[Consider whether recent events have genuinely, permanently changed how ${chosen} sees themselves — not just a passing mood.${coreNote}${tensionNote} If yes, reveal it (keep the 《 》 characters exactly as shown, they're required, not decorative) as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" (replace [one-word-emotion] with an actual word, not the literal placeholder) (2 italicized sentences). If nothing that significant has happened, don't force it — continue the story normally with no reveal at all.]\n`;
 }
 
 function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift) {
@@ -864,7 +866,7 @@ function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift)
       : (mind && mind.relations && mind.relations[target]
         ? ` Feels ${mind.relations[target]} toward ${target} unless this scene shifts it.`
         : "");
-    instruction = `\n[${chosen}'s unspoken reaction to ${target} — 2 italicized sentences: how they really feel about ${target} right now, and what they secretly want from this moment. ${target} can't perceive it.${coreNote}${relationNote}${historyNote}${wantNote}${varietyNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally. Format: "《${chosen}, [one-word-emotion], about ${target}: thought.》"]\n`;
+    instruction = `\n[${chosen}'s unspoken reaction to ${target} — 2 italicized sentences: how they really feel about ${target} right now, and what they secretly want from this moment. ${target} can't perceive it.${coreNote}${relationNote}${historyNote}${wantNote}${varietyNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally. Format (keep the 《 》 characters exactly as shown, they're required, not decorative): "《${chosen}, [one-word-emotion], about ${target}: thought.》"]\n`;
   } else if (mind && mind.core) {
     const atThreshold = allowCoreShift && typeof mind.tensionLevel === "number" &&
       mind.tensionLevel >= TENSION_THRESHOLD;
@@ -877,9 +879,9 @@ function buildAndFitThoughtInstruction(chosen, active, baseText, allowCoreShift)
         ? ` Their feelings have been unraveling for a long time now, unresolved — something this significant would happen regardless. If it's truly earned, you may format this instead as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" to replace their old anchor.`
         : ` Their feelings have been genuinely shifting for a while now, not settling back — if this moment plays into that and something has truly changed how they see themselves, you may format this instead as "《${chosen}, [one-word-emotion], core-shift: new lasting truth.》" to replace their old anchor. Only do this if it's really earned.`)
       : "";
-    instruction = `\n[${chosen}'s private thought — 2 italicized sentences: how they really feel right now, and what they secretly want. Consistent with "${mind.core}" and their feeling of ${mind.feeling} unless this scene shifts it.${historyNote}${wantNote}${varietyNote}${shiftNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally. Format: "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
+    instruction = `\n[${chosen}'s private thought — 2 italicized sentences: how they really feel right now, and what they secretly want. Consistent with "${mind.core}" and their feeling of ${mind.feeling} unless this scene shifts it.${historyNote}${wantNote}${varietyNote}${shiftNote} Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally. Format (keep the 《 》 characters exactly as shown, they're required, not decorative): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
   } else {
-    instruction = `\n[This is ${chosen}'s very first private thought — once revealed, it becomes a lasting truth about who they fundamentally are, something real and significant enough to define them going forward, not a fleeting reaction to this moment. 2 italicized sentences: what this deep truth is, and what they secretly want because of it. Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally. Format: "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
+    instruction = `\n[This is ${chosen}'s very first private thought — once revealed, it becomes a lasting truth about who they fundamentally are, something real and significant enough to define them going forward, not a fleeting reaction to this moment. 2 italicized sentences: what this deep truth is, and what they secretly want because of it. Replace [one-word-emotion] with an actual single word (e.g. wary, hopeful) — do not write the words "feeling" or "emotion" literally. Format (keep the 《 》 characters exactly as shown, they're required, not decorative): "《${chosen}, [one-word-emotion]: thought.》" No one else perceives it.]\n`;
   }
 
   return fitInstructionToBudget(baseText, instruction);
