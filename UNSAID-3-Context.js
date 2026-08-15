@@ -39,6 +39,11 @@ const modifier = (text) => {
 
     const recent = recentTurnsText(text, cfg.recentTurnsWindow);
     const active = cfg.cast.filter(name => nameAppears(name, recent));
+    // Pick up any core truth a creator already wrote into a card's Notes (or recover one from
+    // an earlier session) before deciding what to do — otherwise a character with an
+    // established truth would wrongly look "never revealed" and get treated as a first thought.
+    active.forEach(seedMindIfKnown);
+    if (forcedPeek) seedMindIfKnown(forcedPeek);
 
     if (forcedPeek && forcedPeekCore && !cfg.allowCoreShift) {
       state.message = `🌗 Core-shift checks are off — turn on "Allow major events to rewrite a core truth" in the config card first.`;

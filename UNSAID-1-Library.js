@@ -233,6 +233,7 @@ function ensureConfigCard() {
       "- /peek <character name> — force a private thought from that character right now.\n" +
       "- /peek <character name> core — force a check for whether this moment has changed that character's core truth.\n" +
       "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping the mention count and cooldown.\n\n" +
+      "Pre-authoring a character's inner life: write \"💭 Inner Life — private, not visible to other characters\" followed by \"Core truth:\" and their established truth into a character's own Notes before their first reveal, and UNSAID will start from that instead of inventing one. Matches the same format this script writes when it syncs a reveal, so copying an existing character's Notes as a template works too.\n\n" +
       "UNSAID Config — what each setting above does:\n" +
       "- Enable UNSAID: master switch for the whole script (private thoughts and Codex together). False turns everything off.\n" +
       "- Enable Codex: turns automatic Story Card generation on or off by itself. Turn this off to keep private thoughts working normally on your existing, hand-made cards without any new ones being generated.\n" +
@@ -262,6 +263,7 @@ function ensureConfigCard() {
 
 function readUnsaidConfig() {
   const card = ensureConfigCard();
+  const preAuthoringNote = "Pre-authoring a character's inner life: write \"💭 Inner Life — private, not visible to other characters\" followed by \"Core truth:\" and their established truth into a character's own Notes before their first reveal, and UNSAID will start from that instead of inventing one. Matches the same format this script writes when it syncs a reveal, so copying an existing character's Notes as a template works too.";
   if (!card.description.includes("Commands (type as an action):")) {
     card.description =
       "Commands (type as an action):\n" +
@@ -269,7 +271,16 @@ function readUnsaidConfig() {
       "- /peek <character name> — force a private thought from that character right now.\n" +
       "- /peek <character name> core — force a check for whether this moment has changed that character's core truth.\n" +
       "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping the mention count and cooldown.\n\n" +
+      preAuthoringNote + "\n\n" +
       card.description;
+  } else if (!card.description.includes("Pre-authoring a character's inner life:")) {
+    // Older configs already patched with the commands section (from an earlier version of
+    // this script) but never got this note added — insert it right after that section rather
+    // than re-adding the whole block.
+    const cardLine = "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping the mention count and cooldown.";
+    card.description = card.description.includes(cardLine)
+      ? card.description.replace(cardLine, cardLine + "\n\n" + preAuthoringNote)
+      : preAuthoringNote + "\n\n" + card.description;
   }
   const cfg = { ...UNSAID_DEFAULTS };
 
@@ -813,6 +824,91 @@ function createMind() {
     lastTurn: state.unsaid.turn
   };
 }
+
+// Reads a mind back out of a card's own Notes — either a creator's hand-pre-authored core
+// truth (written in UNSAID's own documented format before any reveal ever happened), or a
+// previously-synced mind recovered after state.unsaid.minds itself was lost somehow (a save
+// import, a state reset) while the cards themselves survived. Understands both the JSON and
+// plain-text formats syncMindToCard itself writes. Returns null if there's nothing usable.
+function loadMindFromCard(card) {
+  if (!card || !card.description) return null;
+  const idx = card.description.indexOf(MIND_NOTES_MARKER);
+  if (idx === -1) return null;
+  const body = card.description.slice(idx + MIND_NOTES_MARKER.length).trim();
+  if (!body) return null;
+
+  try {
+    const parsed = JSON.parse(body);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const mind = createMind();
+      if (typeof parsed.core === "string") mind.core = parsed.core;
+      if (typeof parsed.feeling === "string") mind.feeling = parsed.feeling;
+      if (Array.isArray(parsed.feelingHistory)) mind.feelingHistory = parsed.feelingHistory.filter(f => typeof f === "string").slice(-FEELING_HISTORY_LIMIT);
+      if (typeof parsed.lastThought === "string") mind.lastThoughtText = parsed.lastThought;
+      if (typeof parsed.want === "string") mind.want = parsed.want;
+      if (typeof parsed.revealCount === "number" && parsed.revealCount >= 0) mind.revealCount = parsed.revealCount;
+      if (parsed.relations && typeof parsed.relations === "object") {
+        Object.keys(parsed.relations).forEach(other => {
+          const r = parsed.relations[other];
+          const current = r && typeof r === "object" ? r.current : r;
+          if (typeof current === "string") {
+            mind.relations[other] = current;
+            mind.relationOrder.push(other);
+            mind.relationHistory[other] = (r && Array.isArray(r.history) && r.history.length > 0) ? r.history : [current];
+          }
+        });
+      }
+      return mind.core || mind.feeling || mind.relationOrder.length > 0 ? mind : null;
+    }
+  } catch (e) {
+    // Not JSON — fall through to the plain-text format below.
+  }
+
+  const mind = createMind();
+  let found = false;
+  const coreMatch = body.match(/Core truth:\n([\s\S]*?)(?:\n\n|$)/);
+  if (coreMatch && coreMatch[1].trim()) { mind.core = coreMatch[1].trim(); found = true; }
+  const feelingMatch = body.match(/Currently feeling:\s*([^\n]+)/);
+  if (feelingMatch) { mind.feeling = feelingMatch[1].trim(); found = true; }
+  const wantMatch = body.match(/Wants:\s*([^\n]+)/);
+  if (wantMatch) { mind.want = wantMatch[1].trim(); found = true; }
+  const lastThoughtMatch = body.match(/Last private thought:\n([\s\S]*?)(?:\n\n|$)/);
+  if (lastThoughtMatch && lastThoughtMatch[1].trim()) { mind.lastThoughtText = lastThoughtMatch[1].trim(); found = true; }
+  const countMatch = body.match(/(\d+) private moments? recorded/);
+  if (countMatch) { mind.revealCount = parseInt(countMatch[1], 10); found = true; }
+  const relBlockMatch = body.match(/Feelings toward others:\n([\s\S]*?)(?:\n\n|$)/);
+  if (relBlockMatch) {
+    relBlockMatch[1].split("\n").forEach(line => {
+      const m = line.match(/^\s*[•\-*]\s*(.+?)\s*—\s*(.+)$/);
+      if (!m) return;
+      const other = m[1].trim();
+      const trail = m[2].trim();
+      const current = trail.includes(" → ") ? trail.split(" → ").pop().trim() : trail;
+      if (!other || !current) return;
+      mind.relations[other] = current;
+      mind.relationOrder.push(other);
+      mind.relationHistory[other] = [current];
+      found = true;
+    });
+  }
+  return found ? mind : null;
+}
+
+// Seeds state.unsaid.minds[name] from the character's own card the first time they're needed,
+// if nothing's tracked for them yet. A no-op if a mind already exists or nothing usable was found.
+function seedMindIfKnown(name) {
+  if (!name || state.unsaid.minds[name]) return;
+  const card = storyCards.find(c => c.title && isSameCardEntity(c.title, name));
+  const loaded = card ? loadMindFromCard(card) : null;
+  if (loaded) {
+    // Treat a freshly-seeded mind as long overdue for a thought, not as having just had one —
+    // otherwise the cooldown check below would see a mind object with a "current turn"
+    // timestamp and wrongly block them from being eligible on the very turn they got seeded.
+    loaded.lastTurn = state.unsaid.turn - 1000;
+    state.unsaid.minds[name] = loaded;
+  }
+}
+
 
 function pushCapped(arr, value, limit) {
   if (arr[arr.length - 1] !== value) {

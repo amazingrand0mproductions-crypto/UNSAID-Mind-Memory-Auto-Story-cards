@@ -219,6 +219,7 @@ const modifier = (text) => {
           text = text.replace(matchedPattern, "").replace(/\n{3,}/g, "\n\n").trimEnd();
         }
 
+        seedMindIfKnown(name);
         if (!state.unsaid.minds[name]) state.unsaid.minds[name] = createMind();
         const mind = state.unsaid.minds[name];
         const previousFeeling = mind.feeling;
