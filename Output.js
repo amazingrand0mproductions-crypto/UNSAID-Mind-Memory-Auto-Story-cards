@@ -57,13 +57,24 @@ var unsaidModifier = (text) => {
       return line.match(/^\s*(?:#{1,6}\s*|[-*•+]\s*|\d+[.)]\s*)?[*_]{0,3}\s*["'“”]?([A-Za-z][A-Za-z ]+?)["'“”]?\s*[*_]{0,3}\s*[:=]\s*[*_]{0,3}\s*(.+?)\s*[*_]{0,3}\s*$/);
     }
 
+    // Models sometimes compress an entire template onto one line. Keep this
+    // normalization shared by both the identity peek and the full parser;
+    // otherwise the lightweight Name check sees "Name: X | Race: ..." as
+    // the literal name and rejects a block the full parser could have read.
+    function expandCompressedFields(blockContent) {
+      return String(blockContent || "").replace(
+        /\s*[|;]\s*(?=(?:[*_]{0,3}\s*)?["'“”]?[A-Za-z][A-Za-z ]{1,28}["'“”]?\s*[*_]{0,3}\s*[:=])/g,
+        "\n"
+      );
+    }
+
     // A quick, non-committal peek at just the Name field of a raw block —
     // deliberately much lighter than the full tryBuildCard parse below,
     // since this only needs to answer "which candidate does this block
     // claim to be," not fully validate or score it.
     function peekBlockName(blockContent) {
       let found = null;
-      const lines = blockContent.split("\n");
+      const lines = expandCompressedFields(blockContent).split("\n");
       for (let i = 0; i < lines.length; i++) {
         const fieldMatch = matchFieldLine(lines[i]);
         if (fieldMatch && fieldMatch[1].trim().toLowerCase() === "name") {
@@ -145,10 +156,7 @@ var unsaidModifier = (text) => {
         // pipes/semicolons. Expand only when a separator is followed by
         // another label-shaped "Field:" token, so punctuation inside a
         // normal value is left alone.
-        const expandedBlock = blockContent.replace(
-          /\s*[|;]\s*(?=["'“”]?[A-Za-z][A-Za-z ]{1,28}["'“”]?\s*[:=])/g,
-          "\n"
-        );
+        const expandedBlock = expandCompressedFields(blockContent);
 
         let lastCanonical = null;
         expandedBlock.split("\n").forEach(line => {
@@ -448,7 +456,7 @@ var unsaidModifier = (text) => {
     state.unsaid.codex.pendingTypes = {};
     state.unsaid.codex.pendingForced = false;
 
-    trackMentions(text, true);
+    if (cfg.enabled && cfg.codexEnabled) trackMentions(text, true);
 
     const revealWasRequested = !!state.unsaid.pending;
     if (state.unsaid.pending) {

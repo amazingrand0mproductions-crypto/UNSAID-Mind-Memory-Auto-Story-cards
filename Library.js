@@ -1147,7 +1147,7 @@ var CONFIG_DEFAULT_UNSAID_NOTES_SECTION =
   "- /unsaid resetcodex — clears Codex detection/retry timing without deleting any Story Cards.\n" +
   "- /peek <character name> — force a private thought from that character right now. Quoted names are accepted.\n" +
   "- /peek <character name> core — force a check for whether this moment has changed that character's core truth.\n" +
-  "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping automatic observation/cooldown gates. Quoted names are accepted.\n\n" +
+  "- /card <entity name> — force Codex to generate a card for that exact entity right now, skipping automatic observation/cooldown gates. Existing written Story Card content is preserved. Quoted names are accepted.\n\n" +
   "Pre-authoring a character's inner life: write \"💭 Inner Life — private, not visible to other characters\" followed by \"Core truth:\" and their established truth into a character's own Notes before their first reveal, and UNSAID will start from that instead of inventing one.\n\n" +
   "- Enable UNSAID: master switch for private thoughts + Codex together. False turns both off.\n" +
   "- Enable Codex: auto-Story-Card generation on its own. Turn it off to keep private thoughts working with existing hand-made cards without new cards appearing.\n" +
@@ -1208,8 +1208,24 @@ function ensureSharedConfigCard() {
   }
 
   if (card) {
-    if (!card.entry || card.entry.indexOf(CONFIG_SECTION_UNSAID) === -1) card.entry = renderUnsaidSection(UNSAID_DEFAULTS);
-    if (!card.description || card.description.indexOf(CONFIG_SECTION_UNSAID) === -1) card.description = CONFIG_DEFAULT_UNSAID_NOTES_SECTION;
+    // A pre-merge standalone card was titled "UNSAID Config" and did not
+    // include the == UNSAID == section marker. Because punctuation-insensitive
+    // matching deliberately treats that title as equivalent to the current
+    // one, preserve and wrap its existing contents instead of resetting the
+    // player's edited settings/cast to defaults during migration.
+    card.title = CONFIG_CARD_TITLE;
+    card.keys = CONFIG_CARD_TITLE.toLowerCase();
+    card.type = "Class";
+    if (!card.entry || !card.entry.trim()) {
+      card.entry = renderUnsaidSection(UNSAID_DEFAULTS);
+    } else if (card.entry.indexOf(CONFIG_SECTION_UNSAID) === -1) {
+      card.entry = CONFIG_SECTION_UNSAID + "\n" + card.entry.trim() + "\n";
+    }
+    if (!card.description || !card.description.trim()) {
+      card.description = CONFIG_DEFAULT_UNSAID_NOTES_SECTION;
+    } else if (card.description.indexOf(CONFIG_SECTION_UNSAID) === -1) {
+      card.description = CONFIG_SECTION_UNSAID + "\n" + card.description.trim();
+    }
   }
   return card;
 }
@@ -1229,6 +1245,7 @@ function resetCodexTrackingState() {
   codex.lastMentionTurn = {};
   codex.pendingNames = [];
   codex.pendingTypes = {};
+  codex.pendingForced = false;
   codex.consecutiveFailedNames = [];
   codex.lastTriggerTurn = 0;
 }
@@ -1243,16 +1260,42 @@ function readUnsaidConfig() {
     unsaidNotes = CONFIG_SECTION_UNSAID + "\n" +
       "Commands (type as an action):\n" +
       "- /unsaid status — writes a live status report to a separate \"UNSAID — Status\" card. Not sent to the AI.\n" +
-      "- /peek <character name> — force a private thought from that character right now.\n" +
+      "- /unsaid help — shows the command list and refreshes access to this config card.\n" +
+      "- /unsaid resetcodex — clears Codex detection/retry timing without deleting any Story Cards.\n" +
+      "- /peek <character name> — force a private thought from that character right now. Quoted names are accepted.\n" +
       "- /peek <character name> core — force a check for whether this moment has changed that character's core truth.\n" +
-      "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping the mention count and cooldown.\n\n" +
+      "- /card <entity name> — force Codex to generate a card for that exact entity right now, skipping automatic observation/cooldown gates. Existing written Story Card content is preserved. Quoted names are accepted.\n\n" +
       preAuthoringNote + "\n\n" +
       unsaidNotes.replace(CONFIG_SECTION_UNSAID + "\n", "");
   } else if (!unsaidNotes.includes("Pre-authoring a character's inner life:")) {
-    const cardLine = "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping the mention count and cooldown.";
-    unsaidNotes = unsaidNotes.includes(cardLine)
+    const cardLines = [
+      "- /card <entity name> — force Codex to generate a card for that exact entity right now, skipping automatic observation/cooldown gates. Existing written Story Card content is preserved. Quoted names are accepted.",
+      "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping the mention count and cooldown."
+    ];
+    const cardLine = cardLines.find(line => unsaidNotes.includes(line));
+    unsaidNotes = cardLine
       ? unsaidNotes.replace(cardLine, cardLine + "\n\n" + preAuthoringNote)
       : unsaidNotes.replace(CONFIG_SECTION_UNSAID + "\n", CONFIG_SECTION_UNSAID + "\n" + preAuthoringNote + "\n\n");
+  }
+
+  // Older standalone config cards may already have a command section but
+  // predate newer maintenance commands or the stricter exact-entity wording.
+  // Upgrade the help text in place without touching any user settings/cast.
+  const oldCardLine = "- /card <character name> — force Codex to write or refresh that character's Story Card right now, skipping the mention count and cooldown.";
+  const newCardLine = "- /card <entity name> — force Codex to generate a card for that exact entity right now, skipping automatic observation/cooldown gates. Existing written Story Card content is preserved. Quoted names are accepted.";
+  if (unsaidNotes.includes(oldCardLine)) unsaidNotes = unsaidNotes.replace(oldCardLine, newCardLine);
+  const statusLine = '- /unsaid status — writes a live status report to a separate "UNSAID — Status" card. Not sent to the AI.';
+  const helpLine = '- /unsaid help — shows the command list and refreshes access to this config card.';
+  const resetLine = '- /unsaid resetcodex — clears Codex detection/retry timing without deleting any Story Cards.';
+  if (!unsaidNotes.includes('/unsaid help')) {
+    unsaidNotes = unsaidNotes.includes(statusLine)
+      ? unsaidNotes.replace(statusLine, statusLine + "\n" + helpLine)
+      : unsaidNotes.replace("Commands (type as an action):\n", "Commands (type as an action):\n" + helpLine + "\n");
+  }
+  if (!unsaidNotes.includes('/unsaid resetcodex')) {
+    unsaidNotes = unsaidNotes.includes(helpLine)
+      ? unsaidNotes.replace(helpLine, helpLine + "\n" + resetLine)
+      : unsaidNotes.replace("Commands (type as an action):\n", "Commands (type as an action):\n" + resetLine + "\n");
   }
   card.description = spliceConfigSection(card.description, CONFIG_SECTION_UNSAID, unsaidNotes);
 

@@ -19,12 +19,12 @@ var unsaidModifier = (text) => {
     const commandText = (text || "").trim();
     const isUnsaidCommand = /\/(?:unsaid|pe(?:e|a)k|card)\b/i.test(commandText);
 
-    // Commands are control input, not story evidence. Ordinary Say/Do/Story
-    // input still contributes mention tracking, but "/card Mirelle" should
-    // not itself make Mirelle look more established.
-    if (!isUnsaidCommand) trackMentions(text, false);
-
     const cfg = readUnsaidConfig();
+
+    // Commands are control input, not story evidence. Mention tracking is
+    // part of automatic Codex, so its switches must genuinely pause that
+    // tracking rather than quietly banking mentions for a future re-enable.
+    if (!isUnsaidCommand && cfg.enabled && cfg.codexEnabled) trackMentions(text, false);
 
     if (/^\/unsaid\s+status\s*$/i.test(commandText)) {
       const report = buildStatusReport(cfg);
